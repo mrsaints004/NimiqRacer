@@ -1,0 +1,317 @@
+import { timingSafeEqual } from "crypto";
+import express from "express";
+import helmet from "helmet";
+import cors from "cors";
+import { db } from "./db.js";
+import { str, num, ValidationError } from "./validate.js";
+import { assertPlausibleSession, MAX_DURATION_SECONDS } from "./antiCheat.js";
+import { rateLimit } from "./rateLimit.js";
+
+export function createApp() {
+  // Comma-separated list, e.g. "https://nimiq-racer.example.com,https://staging.nimiq-racer.example.com".
+  const ALLOWED_ORIGINS = (
+    process.env.ALLOWED_ORIGINS ||
+    process.env.FRONTEND_ORIGIN ||
+    "http://localhost:5173"
+  )
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const app = express();
+
+  if (process.env.TRUST_PROXY !== "0") app.set("trust proxy", 1);
+
+  // ── Security headers ──
+  app.use(
+    helmet({
+      contentSecurityPolicy: false, // CSP managed by Vite/frontend meta tags
+      crossOriginEmbedderPolicy: false, // allow cross-origin resources (Three.js textures, etc.)
+    })
+  );
+
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+        callback(new Error("Not allowed by CORS"));
+      },
+    })
+  );
+  app.use(express.json({ limit: "16kb" }));
+
+  const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+
+  // ── CSRF protection for state-changing endpoints ──
+  function csrfGuard(req, res, next) {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+    const origin = req.headers.origin;
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return next();
+    return res.status(403).json({ error: "forbidden" });
+  }
+  app.use(csrfGuard);
+
+  const IDENTITY_CTE = `
+    WITH identified AS (
+      SELECT *,
+        CASE WHEN device_verified = 1 AND device_id IS NOT NULL
+             THEN 'd:' || device_id
+             ELSE 'g:' || lower(username)
+        END AS identity
+      FROM sessions
+    )
+  `;
+
+  // ── Admin auth middleware ──
+  function requireAdmin(req, res, next) {
+    const secret = process.env.ADMIN_SECRET;
+    if (!secret) {
+      return res.status(403).json({ error: "admin endpoint not configured" });
+    }
+    const provided = req.headers["x-admin-secret"];
+    if (
+      provided &&
+      typeof provided === "string" &&
+      provided.length === secret.length &&
+      timingSafeEqual(Buffer.from(provided), Buffer.from(secret))
+    ) {
+      return next();
+    }
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  app.get("/health", (req, res) => res.json({ ok: true }));
+
+  // ── Record a completed game session ──
+  app.post(
+    "/api/sessions",
+    rateLimit({ windowMs: 5 * 60 * 1000, max: 20 }),
+    asyncHandler(async (req, res) => {
+      const b = req.body ?? {};
+      const username = str(b.username, { field: "username", maxLen: 24, alphanumeric: true });
+      const score = num(b.score, { field: "score", min: 0, max: 200_000, integer: true });
+      const coins = num(b.coins, { field: "coins", min: 0, max: 50_000, integer: true, fallback: 0 });
+      const obstaclesAvoided = num(b.obstaclesAvoided, {
+        field: "obstaclesAvoided",
+        min: 0,
+        max: 50_000,
+        integer: true,
+        fallback: 0,
+      });
+      const bonusesCollected = num(b.bonusesCollected, {
+        field: "bonusesCollected",
+        min: 0,
+        max: 50_000,
+        integer: true,
+        fallback: 0,
+      });
+      const distance = num(b.distance, { field: "distance", min: 0, max: MAX_DURATION_SECONDS * 10 + 50, fallback: 0 });
+      const durationSeconds = num(b.durationSeconds, {
+        field: "durationSeconds",
+        min: 0,
+        max: MAX_DURATION_SECONDS,
+        fallback: 0,
+      });
+      const carColor = str(b.carColor, { field: "carColor", maxLen: 16, required: false });
+      const userAgent = str(req.headers["user-agent"], { field: "userAgent", maxLen: 256, required: false });
+
+      assertPlausibleSession({ score, coins, obstaclesAvoided, bonusesCollected, distance, durationSeconds });
+
+      const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128, required: false }) || null;
+      const deviceVerified = !!deviceId;
+
+      const identity = deviceVerified ? `d:${deviceId}` : `g:${username.toLowerCase()}`;
+      const prevBest = (
+        await db.execute({
+          sql: `${IDENTITY_CTE} SELECT MAX(score) AS best FROM identified WHERE identity = ?`,
+          args: [identity],
+        })
+      ).rows[0];
+      const isPersonalBest = score > Number(prevBest?.best ?? -1);
+
+      const result = await db.execute({
+        sql: `INSERT INTO sessions
+          (username, score, coins, obstacles_avoided, bonuses_collected, distance, duration_seconds, car_color, device_id, device_verified, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          username,
+          score,
+          coins,
+          obstaclesAvoided,
+          bonusesCollected,
+          distance,
+          durationSeconds,
+          carColor || null,
+          deviceId,
+          deviceVerified ? 1 : 0,
+          userAgent || null,
+        ],
+      });
+
+      const rankRow = (
+        await db.execute({
+          sql: `${IDENTITY_CTE}, best AS (
+             SELECT identity, MAX(score) AS best_score FROM identified GROUP BY identity
+           )
+           SELECT COUNT(*) + 1 AS rank FROM best WHERE best_score > ?`,
+          args: [score],
+        })
+      ).rows[0];
+
+      const totalPlayers = (
+        await db.execute(`${IDENTITY_CTE} SELECT COUNT(DISTINCT identity) AS n FROM identified`)
+      ).rows[0];
+
+      res.status(201).json({
+        id: Number(result.lastInsertRowid),
+        rank: Number(rankRow.rank),
+        isPersonalBest,
+        totalPlayers: Number(totalPlayers.n),
+        verified: deviceVerified,
+      });
+    })
+  );
+
+  // ── Leaderboard ──
+  app.get(
+    "/api/leaderboard",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
+      const result = await db.execute({
+        sql: `${IDENTITY_CTE}, ranked AS (
+           SELECT username, score, device_verified, created_at,
+                  ROW_NUMBER() OVER (PARTITION BY identity ORDER BY score DESC, created_at ASC) AS rn,
+                  COUNT(*) OVER (PARTITION BY identity) AS games,
+                  MAX(created_at) OVER (PARTITION BY identity) AS last_played
+           FROM identified
+         )
+         SELECT username, score, games, last_played, device_verified AS verified
+         FROM ranked
+         WHERE rn = 1
+         ORDER BY score DESC, last_played ASC
+         LIMIT ?`,
+        args: [limit],
+      });
+      res.json({ leaderboard: result.rows.map((r) => ({ ...r, verified: !!r.verified })) });
+    })
+  );
+
+  // ── Player's own session history ──
+  app.get(
+    "/api/players/:username/sessions",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const username = str(req.params.username, { field: "username", maxLen: 24, alphanumeric: true });
+      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+      const result = await db.execute({
+        sql: `SELECT id, score, coins, obstacles_avoided AS obstaclesAvoided, bonuses_collected AS bonusesCollected,
+                distance, duration_seconds AS durationSeconds, car_color AS carColor, device_verified AS verified, created_at AS createdAt
+         FROM sessions WHERE username = ? ORDER BY created_at DESC LIMIT ?`,
+        args: [username, limit],
+      });
+      res.json({ sessions: result.rows.map((r) => ({ ...r, verified: !!r.verified })) });
+    })
+  );
+
+  // ── Generic analytics event ──
+  app.post(
+    "/api/events",
+    rateLimit({ windowMs: 5 * 60 * 1000, max: 120 }),
+    asyncHandler(async (req, res) => {
+      const b = req.body ?? {};
+      const type = str(b.type, { field: "type", maxLen: 40 });
+      const username = str(b.username, { field: "username", maxLen: 24, required: false });
+      const sessionId = b.sessionId != null ? num(b.sessionId, { field: "sessionId", min: 1, integer: true }) : null;
+      let payload = null;
+      if (b.payload !== undefined) {
+        const serialized = JSON.stringify(b.payload);
+        if (serialized.length > 2000) throw new ValidationError("payload too large");
+        payload = serialized;
+      }
+
+      await db.execute({
+        sql: `INSERT INTO events (session_id, username, type, payload) VALUES (?, ?, ?, ?)`,
+        args: [sessionId, username || null, type, payload],
+      });
+
+      res.status(201).json({ ok: true });
+    })
+  );
+
+  // ── Aggregate stats for monitoring (admin-protected) ──
+  app.get(
+    "/api/stats/summary",
+    rateLimit({ windowMs: 60_000, max: 30 }),
+    requireAdmin,
+    asyncHandler(async (req, res) => {
+      const totals = (
+        await db.execute(
+          `${IDENTITY_CTE} SELECT COUNT(*) AS totalSessions, COUNT(DISTINCT identity) AS uniquePlayers,
+                  AVG(score) AS avgScore, MAX(score) AS maxScore, SUM(coins) AS totalCoins
+           FROM identified`
+        )
+      ).rows[0];
+
+      const sessionsToday = (
+        await db.execute(`SELECT COUNT(*) AS n FROM sessions WHERE created_at >= datetime('now', '-1 day')`)
+      ).rows[0];
+
+      const sessionsLast7Days = (
+        await db.execute(`SELECT COUNT(*) AS n FROM sessions WHERE created_at >= datetime('now', '-7 day')`)
+      ).rows[0];
+
+      const gameStarts = (
+        await db.execute(`SELECT COUNT(*) AS n FROM events WHERE type = 'game_start'`)
+      ).rows[0];
+
+      const eventBreakdown = (
+        await db.execute(`SELECT type, COUNT(*) AS count FROM events GROUP BY type ORDER BY count DESC LIMIT 20`)
+      ).rows;
+
+      const topPlayers = (
+        await db.execute(
+          `${IDENTITY_CTE}, ranked AS (
+             SELECT username, score, device_verified,
+                    ROW_NUMBER() OVER (PARTITION BY identity ORDER BY score DESC) AS rn,
+                    COUNT(*) OVER (PARTITION BY identity) AS games
+             FROM identified
+           )
+           SELECT username, score AS bestScore, games, device_verified AS verified FROM ranked WHERE rn = 1 ORDER BY bestScore DESC LIMIT 5`
+        )
+      ).rows;
+
+      res.json({
+        totalSessions: totals.totalSessions,
+        uniquePlayers: totals.uniquePlayers,
+        avgScore: totals.avgScore ? Math.round(totals.avgScore) : 0,
+        maxScore: totals.maxScore ?? 0,
+        totalCoins: totals.totalCoins ?? 0,
+        sessionsToday: sessionsToday.n,
+        sessionsLast7Days: sessionsLast7Days.n,
+        gameStarts: gameStarts.n,
+        completionRate: gameStarts.n > 0 ? Math.round((totals.totalSessions / gameStarts.n) * 100) : null,
+        eventBreakdown,
+        topPlayers: topPlayers.map((p) => ({ ...p, verified: !!p.verified })),
+      });
+    })
+  );
+
+  // ── Error handler — no internal details leaked to clients ──
+  // Express 5 requires exactly 4 parameters for error-handling middleware.
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, _req, res, _next) => {
+    if (err instanceof ValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err?.message === "Not allowed by CORS") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    console.error(err);
+    res.status(500).json({ error: "internal_error" });
+  });
+
+  return app;
+}

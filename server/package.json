@@ -1,0 +1,21 @@
+{
+  "name": "nimiq-racer-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Analytics + leaderboard backend for Nimiq Racer",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "helmet": "^8.3.0"
+  }
+}

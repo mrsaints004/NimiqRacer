@@ -1,0 +1,58 @@
+import { ValidationError } from "./validate.js";
+
+/**
+ * Server-side plausibility checks for game session data.
+ *
+ * LIMITATION: All game state (score, coins, obstacles, distance, duration) is
+ * authoritative on the client. A motivated attacker can craft payloads that pass
+ * every check here as long as the numbers are internally consistent. These
+ * checks catch casual / automated cheating but cannot replace a server-authoritative
+ * game loop. Treat leaderboard rankings as "best-effort" until a relay-based or
+ * ZK-proof architecture is adopted.
+ */
+
+// These bounds are derived from the actual scoring rules in
+// src/components/EnhancedCarRaceGame.tsx (coin +10, obstacle avoided +5, bonus box +30),
+// generously padded so legitimate skilled play is never rejected — this exists to catch
+// fabricated/scripted submissions, not to police close calls.
+export const MAX_DURATION_SECONDS = 3600; // 1 hour is already an absurdly long single run
+const MAX_COINS_PER_SECOND = 8;
+const MAX_OBSTACLES_PER_SECOND = 5;
+const MAX_BONUSES_PER_3_SECONDS = 1;
+const MAX_SCORE_PER_SECOND = 25;
+
+export function assertPlausibleSession({
+  score,
+  coins,
+  obstaclesAvoided,
+  bonusesCollected,
+  distance,
+  durationSeconds,
+}) {
+  // distance is derived purely from elapsed time in the client (Math.floor(elapsedMs / 100)),
+  // so it must track duration almost exactly regardless of how the run was played.
+  const expectedDistance = durationSeconds * 10;
+  const distanceTolerance = Math.max(5, expectedDistance * 0.15);
+  if (Math.abs(distance - expectedDistance) > distanceTolerance) {
+    throw new ValidationError("distance is inconsistent with duration");
+  }
+
+  // Score is exactly the sum of its components in the current game rules.
+  const expectedScore = coins * 10 + obstaclesAvoided * 5 + bonusesCollected * 30;
+  if (score !== expectedScore) {
+    throw new ValidationError("score does not match reported coins/obstacles/bonuses");
+  }
+
+  if (coins > durationSeconds * MAX_COINS_PER_SECOND + 5) {
+    throw new ValidationError("coins collected implausible for run duration");
+  }
+  if (obstaclesAvoided > durationSeconds * MAX_OBSTACLES_PER_SECOND + 5) {
+    throw new ValidationError("obstacles avoided implausible for run duration");
+  }
+  if (bonusesCollected > durationSeconds / (3 * MAX_BONUSES_PER_3_SECONDS) + 2) {
+    throw new ValidationError("bonuses collected implausible for run duration");
+  }
+  if (score > durationSeconds * MAX_SCORE_PER_SECOND + 50) {
+    throw new ValidationError("score implausible for run duration");
+  }
+}

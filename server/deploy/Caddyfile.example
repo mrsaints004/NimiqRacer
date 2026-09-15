@@ -1,0 +1,11 @@
+## Example reverse proxy for a plain VPS deployment.
+## Caddy auto-provisions and renews a Let's Encrypt TLS certificate for the domain below —
+## this is what makes the API reachable over HTTPS (required once the frontend is HTTPS).
+## Not needed on platforms that already terminate TLS for you (Fly.io, Render, Railway).
+##
+## Usage: point api.yourdomain.com's DNS A/AAAA record at this server, then:
+##   caddy run --config Caddyfile.example
+
+api.yourdomain.com {
+    reverse_proxy localhost:8787
+}
