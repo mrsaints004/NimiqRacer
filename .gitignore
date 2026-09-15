@@ -1,3 +1,10 @@
+# Secrets / deploy notes
+VERCEL_ENV.md
+
+# Turso local auth artifacts
+auth
+auth-wal
+
 # Dependencies
 node_modules/
 *.pnp

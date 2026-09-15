@@ -5,8 +5,8 @@
   "type": "module",
   "description": "Analytics + leaderboard backend for Nimiq Racer",
   "scripts": {
-    "dev": "node --watch src/index.js",
-    "start": "node src/index.js",
+    "dev": "node --watch --env-file=.env src/index.js",
+    "start": "node --env-file=.env src/index.js",
     "test": "node --test"
   },
   "engines": {

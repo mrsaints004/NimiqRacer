@@ -14,7 +14,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@libsql/client": "^0.14.0",
     "@nimiq/mini-app-sdk": "^0.1.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "helmet": "^8.3.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "three": "^0.178.0"
