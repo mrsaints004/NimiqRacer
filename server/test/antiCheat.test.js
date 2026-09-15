@@ -4,7 +4,7 @@ import { assertPlausibleSession } from "../src/antiCheat.js";
 import { ValidationError } from "../src/validate.js";
 
 const validSession = () => ({
-  score: 200, // 10*10 + 8*5 + 2*30
+  score: 220, // 10*10 + 8*5 + 2*30 + floor(400/20)
   coins: 10,
   obstaclesAvoided: 8,
   bonusesCollected: 2,
@@ -27,7 +27,7 @@ test("rejects distance inconsistent with duration", () => {
 });
 
 test("rejects implausible coin collection rate", () => {
-  const s = { ...validSession(), coins: 1000, score: 1000 * 10 + 8 * 5 + 2 * 30, distance: 400, durationSeconds: 40 };
+  const s = { ...validSession(), coins: 1000, score: 1000 * 10 + 8 * 5 + 2 * 30 + Math.floor(400 / 20), distance: 400, durationSeconds: 40 };
   assert.throws(() => assertPlausibleSession(s), ValidationError);
 });
 
@@ -36,7 +36,7 @@ test("rejects implausible obstacle-avoidance rate", () => {
   const s = {
     ...validSession(),
     obstaclesAvoided,
-    score: 10 * 10 + obstaclesAvoided * 5 + 2 * 30,
+    score: 10 * 10 + obstaclesAvoided * 5 + 2 * 30 + Math.floor(400 / 20),
   };
   assert.throws(() => assertPlausibleSession(s), ValidationError);
 });
@@ -48,7 +48,7 @@ test("rejects an internally-consistent but implausibly fast overall score rate",
     coins: 13,
     obstaclesAvoided: 10,
     bonusesCollected: 2,
-    score: 13 * 10 + 10 * 5 + 2 * 30, // 240
+    score: 13 * 10 + 10 * 5 + 2 * 30 + Math.floor(10 / 20), // 240
     distance: 10,
     durationSeconds: 1,
   };

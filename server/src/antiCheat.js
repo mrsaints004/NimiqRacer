@@ -12,9 +12,9 @@ import { ValidationError } from "./validate.js";
  */
 
 // These bounds are derived from the actual scoring rules in
-// src/components/EnhancedCarRaceGame.tsx (coin +10, obstacle avoided +5, bonus box +30),
-// generously padded so legitimate skilled play is never rejected — this exists to catch
-// fabricated/scripted submissions, not to police close calls.
+// src/components/EnhancedCarRaceGame.tsx:
+//   coin +10, obstacle avoided +5, bonus box +30, distance points: floor(distance/20)
+// Generously padded so legitimate skilled play is never rejected.
 export const MAX_DURATION_SECONDS = 3600; // 1 hour is already an absurdly long single run
 const MAX_COINS_PER_SECOND = 8;
 const MAX_OBSTACLES_PER_SECOND = 5;
@@ -37,8 +37,10 @@ export function assertPlausibleSession({
     throw new ValidationError("distance is inconsistent with duration");
   }
 
-  // Score is exactly the sum of its components in the current game rules.
-  const expectedScore = coins * 10 + obstaclesAvoided * 5 + bonusesCollected * 30;
+  // Score is the sum of its components: coins, obstacles, bonuses, plus passive
+  // distance-based points (1 point per 20 distance units driven).
+  const distancePoints = Math.floor(distance / 20);
+  const expectedScore = coins * 10 + obstaclesAvoided * 5 + bonusesCollected * 30 + distancePoints;
   if (score !== expectedScore) {
     throw new ValidationError("score does not match reported coins/obstacles/bonuses");
   }
