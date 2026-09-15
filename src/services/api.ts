@@ -68,6 +68,33 @@ export interface StatsSummary {
   topPlayers: { username: string; bestScore: number; games: number; verified: boolean }[];
 }
 
+// ── Car purchases ──
+
+export interface Purchase {
+  car_hex: string;
+  car_name: string;
+  tx_hash: string | null;
+  price_luna: number;
+  created_at: string;
+}
+
+export async function fetchPurchases(deviceId: string): Promise<Purchase[]> {
+  const res = await fetch(`${API_BASE}/api/purchases/${encodeURIComponent(deviceId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.purchases as Purchase[];
+}
+
+export async function recordPurchase(payload: {
+  deviceId: string;
+  carHex: string;
+  carName: string;
+  txHash?: string;
+  priceLuna: number;
+}): Promise<{ ok: boolean; alreadyOwned: boolean }> {
+  return postJson("/api/purchases", payload);
+}
+
 export async function fetchStatsSummary(adminSecret?: string): Promise<StatsSummary> {
   const headers: Record<string, string> = {};
   if (adminSecret) headers["x-admin-secret"] = adminSecret;

@@ -174,6 +174,53 @@ export function createApp() {
     })
   );
 
+  // ── Record a car purchase ──
+  app.post(
+    "/api/purchases",
+    rateLimit({ windowMs: 5 * 60 * 1000, max: 30 }),
+    asyncHandler(async (req, res) => {
+      const b = req.body ?? {};
+      const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128 });
+      const carHex = str(b.carHex, { field: "carHex", maxLen: 16 });
+      const carName = str(b.carName, { field: "carName", maxLen: 40 });
+      const txHash = str(b.txHash, { field: "txHash", maxLen: 128, required: false }) || null;
+      const priceLuna = num(b.priceLuna, { field: "priceLuna", min: 0, integer: true });
+
+      // UNIQUE(device_id, car_hex) prevents duplicate purchases at the DB level
+      try {
+        await db.execute({
+          sql: `INSERT INTO purchases (device_id, car_hex, car_name, tx_hash, price_luna) VALUES (?, ?, ?, ?, ?)`,
+          args: [deviceId, carHex, carName, txHash, priceLuna],
+        });
+      } catch (err) {
+        // Duplicate purchase — not an error, just return existing
+        if (err?.message?.includes("UNIQUE constraint")) {
+          const existing = (
+            await db.execute({ sql: `SELECT * FROM purchases WHERE device_id = ? AND car_hex = ?`, args: [deviceId, carHex] })
+          ).rows[0];
+          return res.json({ ok: true, alreadyOwned: true, purchase: existing });
+        }
+        throw err;
+      }
+
+      res.status(201).json({ ok: true, alreadyOwned: false });
+    })
+  );
+
+  // ── Get purchases for a device ──
+  app.get(
+    "/api/purchases/:deviceId",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const deviceId = str(req.params.deviceId, { field: "deviceId", maxLen: 128 });
+      const result = await db.execute({
+        sql: `SELECT car_hex, car_name, tx_hash, price_luna, created_at FROM purchases WHERE device_id = ?`,
+        args: [deviceId],
+      });
+      res.json({ purchases: result.rows });
+    })
+  );
+
   // ── Leaderboard ──
   app.get(
     "/api/leaderboard",

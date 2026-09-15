@@ -40,6 +40,19 @@ export async function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
     CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
+
+    CREATE TABLE IF NOT EXISTS purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      car_hex TEXT NOT NULL,
+      car_name TEXT NOT NULL,
+      tx_hash TEXT,
+      price_luna INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(device_id, car_hex)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_purchases_device_id ON purchases(device_id);
   `);
 
   // Migration guard: add device_id / device_verified columns if missing (pre-existing DB).

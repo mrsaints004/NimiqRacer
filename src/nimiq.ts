@@ -66,14 +66,20 @@ export async function sendNimPayment({
       ? await nimiqProvider.sendBasicTransactionWithData({ recipient, value, data })
       : await nimiqProvider.sendBasicTransaction({ recipient, value });
 
-    // ErrorResponse has a `code` field
-    if (result && typeof result === "object" && "code" in result) {
+    // The SDK throws or returns an ErrorResponse on rejection/failure.
+    // An ErrorResponse has a numeric `code` field. Anything else (string tx hash,
+    // or any truthy value) means the transaction was accepted (possibly still pending).
+    if (result && typeof result === "object" && "code" in result && typeof result.code === "number") {
       return { success: false, error: result.message || "Transaction rejected" };
     }
 
+    // If we got here, the transaction was accepted by Nimiq Pay. It may still be
+    // pending confirmation, but the user has approved and signed it — treat as success.
     return { success: true, txHash: typeof result === "string" ? result : undefined };
   } catch (err: any) {
-    return { success: false, error: err?.message || "Transaction failed" };
+    // User cancelled or SDK error
+    const msg = err?.message || String(err) || "Transaction failed";
+    return { success: false, error: msg };
   }
 }
 
