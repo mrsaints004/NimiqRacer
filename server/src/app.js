@@ -283,29 +283,35 @@ export function createApp() {
          LIMIT ?`,
         args: [limit],
       });
-      // Enrich with badge counts
-      const enriched = await Promise.all(
-        result.rows.map(async (r) => {
-          let badge_count = 0;
-          // Try to find badge count via device_id from sessions
-          const deviceRow = (
-            await db.execute({
-              sql: `SELECT device_id FROM sessions WHERE username = ? AND device_id IS NOT NULL LIMIT 1`,
-              args: [r.username],
-            })
-          ).rows[0];
-          if (deviceRow?.device_id) {
-            const countRow = (
-              await db.execute({
-                sql: `SELECT COUNT(*) AS n FROM achievements WHERE device_id = ?`,
-                args: [deviceRow.device_id],
-              })
-            ).rows[0];
-            badge_count = Number(countRow?.n ?? 0);
-          }
-          return { ...r, verified: !!r.verified, badge_count };
-        })
-      );
+      // Enrich with badge counts (gracefully degrade if achievements table missing)
+      let enriched;
+      try {
+        enriched = await Promise.all(
+          result.rows.map(async (r) => {
+            let badge_count = 0;
+            try {
+              const deviceRow = (
+                await db.execute({
+                  sql: `SELECT device_id FROM sessions WHERE username = ? AND device_id IS NOT NULL LIMIT 1`,
+                  args: [r.username],
+                })
+              ).rows[0];
+              if (deviceRow?.device_id) {
+                const countRow = (
+                  await db.execute({
+                    sql: `SELECT COUNT(*) AS n FROM achievements WHERE device_id = ?`,
+                    args: [deviceRow.device_id],
+                  })
+                ).rows[0];
+                badge_count = Number(countRow?.n ?? 0);
+              }
+            } catch { /* achievements table may not exist yet */ }
+            return { ...r, verified: !!r.verified, badge_count };
+          })
+        );
+      } catch {
+        enriched = result.rows.map((r) => ({ ...r, verified: !!r.verified, badge_count: 0 }));
+      }
       res.json({ leaderboard: enriched });
     })
   );
