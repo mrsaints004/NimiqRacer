@@ -21,6 +21,17 @@ const MAX_OBSTACLES_PER_SECOND = 5;
 const MAX_BONUSES_PER_3_SECONDS = 1;
 const MAX_SCORE_PER_SECOND = 25;
 
+// Achievement badge definitions (used by app.js for checking)
+export const ACHIEVEMENT_DEFS = [
+  { badge: "rookie", name: "Rookie", criteria: "Complete 1 race" },
+  { badge: "road_warrior", name: "Road Warrior", criteria: "Score 500+ in a single run" },
+  { badge: "speed_demon", name: "Speed Demon", criteria: "Score 2000+ in a single run" },
+  { badge: "coin_hunter", name: "Coin Hunter", criteria: "Collect 100+ coins in one run" },
+  { badge: "dodger", name: "Dodger", criteria: "Avoid 50+ obstacles in one run" },
+  { badge: "veteran", name: "Veteran", criteria: "Play 10 games" },
+  { badge: "endurance", name: "Endurance", criteria: "Survive 5+ minutes in one run" },
+];
+
 export function assertPlausibleSession({
   score,
   coins,
@@ -28,6 +39,7 @@ export function assertPlausibleSession({
   bonusesCollected,
   distance,
   durationSeconds,
+  powerUps,
 }) {
   // distance is derived purely from elapsed time in the client (Math.floor(elapsedMs / 100)),
   // so it must track duration almost exactly regardless of how the run was played.
@@ -37,15 +49,23 @@ export function assertPlausibleSession({
     throw new ValidationError("distance is inconsistent with duration");
   }
 
+  // Power-up adjustments
+  const activePowerUps = Array.isArray(powerUps) ? powerUps : [];
+  const hasHeadStart = activePowerUps.includes("head_start");
+  const hasCoinMagnet = activePowerUps.includes("coin_magnet");
+  const headStartBonus = hasHeadStart ? 150 : 0;
+
   // Score is the sum of its components: coins, obstacles, bonuses, plus passive
-  // distance-based points (1 point per 20 distance units driven).
+  // distance-based points (1 point per 20 distance units driven), plus head start bonus.
   const distancePoints = Math.floor(distance / 20);
-  const expectedScore = coins * 10 + obstaclesAvoided * 5 + bonusesCollected * 30 + distancePoints;
+  const expectedScore = coins * 10 + obstaclesAvoided * 5 + bonusesCollected * 30 + distancePoints + headStartBonus;
   if (score !== expectedScore) {
     throw new ValidationError("score does not match reported coins/obstacles/bonuses");
   }
 
-  if (coins > durationSeconds * MAX_COINS_PER_SECOND + 5) {
+  // Coin magnet allows ~2x collection rate
+  const coinRateMultiplier = hasCoinMagnet ? 2 : 1;
+  if (coins > durationSeconds * MAX_COINS_PER_SECOND * coinRateMultiplier + 5) {
     throw new ValidationError("coins collected implausible for run duration");
   }
   if (obstaclesAvoided > durationSeconds * MAX_OBSTACLES_PER_SECOND + 5) {
@@ -54,7 +74,8 @@ export function assertPlausibleSession({
   if (bonusesCollected > durationSeconds / (3 * MAX_BONUSES_PER_3_SECONDS) + 2) {
     throw new ValidationError("bonuses collected implausible for run duration");
   }
-  if (score > durationSeconds * MAX_SCORE_PER_SECOND + 50) {
+  // Extra lives and head start can add to the score ceiling
+  if (score > durationSeconds * MAX_SCORE_PER_SECOND + 50 + headStartBonus) {
     throw new ValidationError("score implausible for run duration");
   }
 }

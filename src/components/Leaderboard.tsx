@@ -114,7 +114,26 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                   </span>
                   {entry.verified && (
                     <span title="Verified device" style={{ fontSize: 11, color: "#22cc88" }}>
-                      ✓
+                      &#10003;
+                    </span>
+                  )}
+                  {(entry as any).badge_count > 0 && (
+                    <span
+                      title={`${(entry as any).badge_count} badges`}
+                      style={{
+                        fontSize: 9,
+                        fontWeight: "bold",
+                        background: "#ffd700",
+                        color: "#000",
+                        borderRadius: "50%",
+                        width: 16,
+                        height: 16,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {(entry as any).badge_count}
                     </span>
                   )}
                 </span>

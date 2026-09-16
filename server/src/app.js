@@ -4,7 +4,7 @@ import helmet from "helmet";
 import cors from "cors";
 import { db } from "./db.js";
 import { str, num, ValidationError } from "./validate.js";
-import { assertPlausibleSession, MAX_DURATION_SECONDS } from "./antiCheat.js";
+import { assertPlausibleSession, MAX_DURATION_SECONDS, ACHIEVEMENT_DEFS } from "./antiCheat.js";
 import { rateLimit } from "./rateLimit.js";
 
 export function createApp() {
@@ -117,7 +117,8 @@ export function createApp() {
       const carColor = str(b.carColor, { field: "carColor", maxLen: 16, required: false });
       const userAgent = str(req.headers["user-agent"], { field: "userAgent", maxLen: 256, required: false });
 
-      assertPlausibleSession({ score, coins, obstaclesAvoided, bonusesCollected, distance, durationSeconds });
+      const powerUps = Array.isArray(b.powerUps) ? b.powerUps : [];
+      assertPlausibleSession({ score, coins, obstaclesAvoided, bonusesCollected, distance, durationSeconds, powerUps });
 
       const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128, required: false }) || null;
       const deviceVerified = !!deviceId;
@@ -164,12 +165,52 @@ export function createApp() {
         await db.execute(`${IDENTITY_CTE} SELECT COUNT(DISTINCT identity) AS n FROM identified`)
       ).rows[0];
 
+      // ── Achievement checking ──
+      const sessionId = Number(result.lastInsertRowid);
+      const newBadges = [];
+
+      if (deviceId) {
+        // Count total games for this device
+        const gameCountRow = (
+          await db.execute({
+            sql: `SELECT COUNT(*) AS n FROM sessions WHERE device_id = ?`,
+            args: [deviceId],
+          })
+        ).rows[0];
+        const gameCount = Number(gameCountRow.n);
+
+        const checks = [
+          { badge: "rookie", condition: true }, // Completed a race
+          { badge: "road_warrior", condition: score >= 500 },
+          { badge: "speed_demon", condition: score >= 2000 },
+          { badge: "coin_hunter", condition: coins >= 100 },
+          { badge: "dodger", condition: obstaclesAvoided >= 50 },
+          { badge: "veteran", condition: gameCount >= 10 },
+          { badge: "endurance", condition: durationSeconds >= 300 },
+        ];
+
+        for (const { badge, condition } of checks) {
+          if (!condition) continue;
+          try {
+            await db.execute({
+              sql: `INSERT INTO achievements (device_id, badge, session_id) VALUES (?, ?, ?)`,
+              args: [deviceId, badge, sessionId],
+            });
+            newBadges.push(badge);
+          } catch (err) {
+            // UNIQUE constraint = already earned
+            if (!err?.message?.includes("UNIQUE constraint")) throw err;
+          }
+        }
+      }
+
       res.status(201).json({
-        id: Number(result.lastInsertRowid),
+        id: sessionId,
         rank: Number(rankRow.rank),
         isPersonalBest,
         totalPlayers: Number(totalPlayers.n),
         verified: deviceVerified,
+        newBadges,
       });
     })
   );
@@ -242,7 +283,30 @@ export function createApp() {
          LIMIT ?`,
         args: [limit],
       });
-      res.json({ leaderboard: result.rows.map((r) => ({ ...r, verified: !!r.verified })) });
+      // Enrich with badge counts
+      const enriched = await Promise.all(
+        result.rows.map(async (r) => {
+          let badge_count = 0;
+          // Try to find badge count via device_id from sessions
+          const deviceRow = (
+            await db.execute({
+              sql: `SELECT device_id FROM sessions WHERE username = ? AND device_id IS NOT NULL LIMIT 1`,
+              args: [r.username],
+            })
+          ).rows[0];
+          if (deviceRow?.device_id) {
+            const countRow = (
+              await db.execute({
+                sql: `SELECT COUNT(*) AS n FROM achievements WHERE device_id = ?`,
+                args: [deviceRow.device_id],
+              })
+            ).rows[0];
+            badge_count = Number(countRow?.n ?? 0);
+          }
+          return { ...r, verified: !!r.verified, badge_count };
+        })
+      );
+      res.json({ leaderboard: enriched });
     })
   );
 
@@ -343,6 +407,210 @@ export function createApp() {
         eventBreakdown,
         topPlayers: topPlayers.map((p) => ({ ...p, verified: !!p.verified })),
       });
+    })
+  );
+
+  // ── Record a power-up purchase ──
+  app.post(
+    "/api/power-ups",
+    rateLimit({ windowMs: 5 * 60 * 1000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const b = req.body ?? {};
+      const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128 });
+      const powerUp = str(b.powerUp, { field: "powerUp", maxLen: 40 });
+      const txHash = str(b.txHash, { field: "txHash", maxLen: 128, required: false }) || null;
+      const priceLuna = num(b.priceLuna, { field: "priceLuna", min: 0, integer: true });
+
+      const result = await db.execute({
+        sql: `INSERT INTO power_up_purchases (device_id, power_up, tx_hash, price_luna) VALUES (?, ?, ?, ?)`,
+        args: [deviceId, powerUp, txHash, priceLuna],
+      });
+
+      res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+    })
+  );
+
+  // ── Get unused power-ups for a device ──
+  app.get(
+    "/api/power-ups/:deviceId",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const deviceId = str(req.params.deviceId, { field: "deviceId", maxLen: 128 });
+      const result = await db.execute({
+        sql: `SELECT id, power_up, used, created_at FROM power_up_purchases WHERE device_id = ? AND used = 0 ORDER BY created_at DESC`,
+        args: [deviceId],
+      });
+      res.json({ powerUps: result.rows });
+    })
+  );
+
+  // ── Create a challenge ──
+  app.post(
+    "/api/challenges",
+    rateLimit({ windowMs: 5 * 60 * 1000, max: 30 }),
+    asyncHandler(async (req, res) => {
+      const b = req.body ?? {};
+      const username = str(b.username, { field: "username", maxLen: 24, alphanumeric: true });
+      const score = num(b.score, { field: "score", min: 0, max: 200_000, integer: true });
+      const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128, required: false }) || null;
+
+      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+      await db.execute({
+        sql: `INSERT INTO challenges (id, creator_username, creator_score, creator_device_id) VALUES (?, ?, ?, ?)`,
+        args: [id, username, score, deviceId],
+      });
+
+      res.status(201).json({ id });
+    })
+  );
+
+  // ── Get challenge details ──
+  app.get(
+    "/api/challenges/:id",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const id = str(req.params.id, { field: "id", maxLen: 64 });
+      const result = await db.execute({
+        sql: `SELECT id, creator_username, creator_score, status, accepted_by, accepted_score FROM challenges WHERE id = ?`,
+        args: [id],
+      });
+      if (result.rows.length === 0) return res.status(404).json({ error: "challenge not found" });
+      res.json({ challenge: result.rows[0] });
+    })
+  );
+
+  // ── Accept a challenge ──
+  app.post(
+    "/api/challenges/:id/accept",
+    rateLimit({ windowMs: 5 * 60 * 1000, max: 30 }),
+    asyncHandler(async (req, res) => {
+      const id = str(req.params.id, { field: "id", maxLen: 64 });
+      const b = req.body ?? {};
+      const username = str(b.username, { field: "username", maxLen: 24, alphanumeric: true });
+      const score = num(b.score, { field: "score", min: 0, max: 200_000, integer: true });
+
+      await db.execute({
+        sql: `UPDATE challenges SET accepted_by = ?, accepted_score = ?, status = 'completed' WHERE id = ? AND status = 'open'`,
+        args: [username, score, id],
+      });
+
+      res.json({ ok: true });
+    })
+  );
+
+  // ── Streak check-in (signature verification) ──
+  app.post(
+    "/api/streaks/checkin",
+    rateLimit({ windowMs: 60_000, max: 10 }),
+    asyncHandler(async (req, res) => {
+      const b = req.body ?? {};
+      const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128 });
+      const publicKey = str(b.publicKey, { field: "publicKey", maxLen: 128 });
+      const signature = str(b.signature, { field: "signature", maxLen: 256 });
+      const message = str(b.message, { field: "message", maxLen: 256 });
+
+      // Extract date from message format: NimiqRacer:checkin:YYYY-MM-DD:{deviceId}
+      const parts = message.split(":");
+      if (parts.length < 3 || parts[0] !== "NimiqRacer" || parts[1] !== "checkin") {
+        throw new ValidationError("invalid checkin message format");
+      }
+      const dayDate = parts[2];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dayDate)) {
+        throw new ValidationError("invalid date format in message");
+      }
+
+      // Calculate streak: check if yesterday exists
+      const yesterday = new Date(new Date(dayDate).getTime() - 86400000).toISOString().slice(0, 10);
+      const prevRow = (
+        await db.execute({
+          sql: `SELECT streak_count FROM streaks WHERE device_id = ? AND day_date = ? ORDER BY created_at DESC LIMIT 1`,
+          args: [deviceId, yesterday],
+        })
+      ).rows[0];
+
+      const streakCount = prevRow ? Number(prevRow.streak_count) + 1 : 1;
+
+      try {
+        await db.execute({
+          sql: `INSERT INTO streaks (device_id, public_key, signature, day_date, streak_count) VALUES (?, ?, ?, ?, ?)`,
+          args: [deviceId, publicKey, signature, dayDate, streakCount],
+        });
+      } catch (err) {
+        if (err?.message?.includes("UNIQUE constraint")) {
+          // Already checked in today
+          const existing = (
+            await db.execute({
+              sql: `SELECT streak_count FROM streaks WHERE device_id = ? AND day_date = ?`,
+              args: [deviceId, dayDate],
+            })
+          ).rows[0];
+          const currentStreak = Number(existing?.streak_count ?? 0);
+          const unlocks = [];
+          if (currentStreak >= 7) unlocks.push("streak_7");
+          if (currentStreak >= 30) unlocks.push("streak_30");
+          return res.json({ ok: true, streak: currentStreak, unlocks, alreadyCheckedIn: true });
+        }
+        throw err;
+      }
+
+      const unlocks = [];
+      if (streakCount >= 7) unlocks.push("streak_7");
+      if (streakCount >= 30) unlocks.push("streak_30");
+
+      res.status(201).json({ ok: true, streak: streakCount, unlocks });
+    })
+  );
+
+  // ── Get streak info ──
+  app.get(
+    "/api/streaks/:deviceId",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const deviceId = str(req.params.deviceId, { field: "deviceId", maxLen: 128 });
+      const latest = (
+        await db.execute({
+          sql: `SELECT streak_count, day_date FROM streaks WHERE device_id = ? ORDER BY day_date DESC LIMIT 1`,
+          args: [deviceId],
+        })
+      ).rows[0];
+
+      const total = (
+        await db.execute({
+          sql: `SELECT COUNT(*) AS n FROM streaks WHERE device_id = ?`,
+          args: [deviceId],
+        })
+      ).rows[0];
+
+      if (!latest) {
+        return res.json({ current_streak: 0, last_date: null, total_checkins: 0 });
+      }
+
+      // Check if streak is still active (last check-in was today or yesterday)
+      const today = new Date().toISOString().slice(0, 10);
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const lastDate = String(latest.day_date);
+      const isActive = lastDate === today || lastDate === yesterday;
+
+      res.json({
+        current_streak: isActive ? Number(latest.streak_count) : 0,
+        last_date: lastDate,
+        total_checkins: Number(total.n),
+      });
+    })
+  );
+
+  // ── Get achievements for a device ──
+  app.get(
+    "/api/achievements/:deviceId",
+    rateLimit({ windowMs: 60_000, max: 60 }),
+    asyncHandler(async (req, res) => {
+      const deviceId = str(req.params.deviceId, { field: "deviceId", maxLen: 128 });
+      const result = await db.execute({
+        sql: `SELECT badge, created_at FROM achievements WHERE device_id = ? ORDER BY created_at ASC`,
+        args: [deviceId],
+      });
+      res.json({ achievements: result.rows });
     })
   );
 

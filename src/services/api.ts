@@ -95,6 +95,108 @@ export async function recordPurchase(payload: {
   return postJson("/api/purchases", payload);
 }
 
+// ── Power-ups ──
+
+export interface PowerUpPurchase {
+  id: number;
+  power_up: string;
+  used: number;
+  created_at: string;
+}
+
+export async function recordPowerUp(payload: {
+  deviceId: string;
+  powerUp: string;
+  txHash?: string;
+  priceLuna: number;
+}): Promise<{ ok: boolean; id: number }> {
+  return postJson("/api/power-ups", payload);
+}
+
+export async function fetchPowerUps(deviceId: string): Promise<PowerUpPurchase[]> {
+  const res = await fetch(`${API_BASE}/api/power-ups/${encodeURIComponent(deviceId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.powerUps as PowerUpPurchase[];
+}
+
+// ── Challenges ──
+
+export interface Challenge {
+  id: string;
+  creator_username: string;
+  creator_score: number;
+  status: string;
+  accepted_by: string | null;
+  accepted_score: number | null;
+}
+
+export async function createChallenge(payload: {
+  username: string;
+  score: number;
+  deviceId?: string;
+}): Promise<{ id: string }> {
+  return postJson("/api/challenges", payload);
+}
+
+export async function fetchChallenge(id: string): Promise<Challenge | null> {
+  const res = await fetch(`${API_BASE}/api/challenges/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.challenge as Challenge;
+}
+
+export async function acceptChallenge(id: string, payload: {
+  username: string;
+  score: number;
+}): Promise<{ ok: boolean }> {
+  return postJson(`/api/challenges/${encodeURIComponent(id)}/accept`, payload);
+}
+
+// ── Streaks ──
+
+export interface StreakInfo {
+  current_streak: number;
+  last_date: string | null;
+  total_checkins: number;
+}
+
+export async function streakCheckin(payload: {
+  deviceId: string;
+  publicKey: string;
+  signature: string;
+  message: string;
+}): Promise<{ ok: boolean; streak: number; unlocks: string[] }> {
+  return postJson("/api/streaks/checkin", payload);
+}
+
+export async function fetchStreak(deviceId: string): Promise<StreakInfo> {
+  const res = await fetch(`${API_BASE}/api/streaks/${encodeURIComponent(deviceId)}`);
+  if (!res.ok) return { current_streak: 0, last_date: null, total_checkins: 0 };
+  const data = await res.json();
+  return data as StreakInfo;
+}
+
+// ── Achievements ──
+
+export interface Achievement {
+  badge: string;
+  created_at: string;
+}
+
+export async function fetchAchievements(deviceId: string): Promise<Achievement[]> {
+  const res = await fetch(`${API_BASE}/api/achievements/${encodeURIComponent(deviceId)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.achievements as Achievement[];
+}
+
+// ── Session result extended ──
+
+export interface SessionResultExtended extends SessionResult {
+  newBadges?: string[];
+}
+
 export async function fetchStatsSummary(adminSecret?: string): Promise<StatsSummary> {
   const headers: Record<string, string> = {};
   if (adminSecret) headers["x-admin-secret"] = adminSecret;

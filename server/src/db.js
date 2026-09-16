@@ -53,6 +53,53 @@ export async function initDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_purchases_device_id ON purchases(device_id);
+
+    CREATE TABLE IF NOT EXISTS power_up_purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      power_up TEXT NOT NULL,
+      tx_hash TEXT,
+      price_luna INTEGER NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_powerups_device_id ON power_up_purchases(device_id);
+
+    CREATE TABLE IF NOT EXISTS challenges (
+      id TEXT PRIMARY KEY,
+      creator_username TEXT NOT NULL,
+      creator_score INTEGER NOT NULL,
+      creator_device_id TEXT,
+      accepted_by TEXT,
+      accepted_score INTEGER,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS streaks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      day_date TEXT NOT NULL,
+      streak_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(device_id, day_date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_streaks_device_id ON streaks(device_id);
+
+    CREATE TABLE IF NOT EXISTS achievements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      badge TEXT NOT NULL,
+      session_id INTEGER REFERENCES sessions(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(device_id, badge)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_achievements_device_id ON achievements(device_id);
   `);
 
   // Migration guard: add device_id / device_verified columns if missing (pre-existing DB).

@@ -3,6 +3,8 @@ import * as THREE from "three";
 import {
   submitSession,
   logEvent,
+  createChallenge,
+  acceptChallenge,
   type SessionResult,
 } from "../services/api";
 import Leaderboard from "./Leaderboard";
@@ -48,6 +50,11 @@ const CAR_COLORS = [0x3388ff, 0xff4444, 0x44cc44, 0xff8800, 0xcc44cc, 0x00cccc];
 
 // ─────────────────────────────────────────────────────────────
 
+// ── Haptic feedback ──
+function vibrate(pattern: number | number[]) {
+  try { navigator?.vibrate?.(pattern); } catch { /* unsupported */ }
+}
+
 interface GameGroup extends THREE.Group {
   collected?: boolean;
 }
@@ -56,9 +63,19 @@ interface EnhancedCarRaceGameProps {
   username: string;
   selectedCarColor?: number;
   onHome?: () => void;
+  activePowerUps?: Set<string>;
+  carStats?: { speedBonus: number; handlingBonus: number; durabilityBonus: number };
+  challengeTarget?: { username: string; score: number; challengeId: string };
 }
 
-const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, selectedCarColor, onHome }) => {
+const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
+  username,
+  selectedCarColor,
+  onHome,
+  activePowerUps = new Set(),
+  carStats = { speedBonus: 0, handlingBonus: 0, durabilityBonus: 0 },
+  challengeTarget,
+}) => {
   // ── Refs ──
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -70,6 +87,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
   const goldenKeysRef = useRef<GameGroup[]>([]);
   const invisibilityIndicatorRef = useRef<THREE.Mesh | null>(null);
   const animationIdRef = useRef<number>(0);
+  const waitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sunRef = useRef<THREE.DirectionalLight | null>(null);
   const audioRef = useRef<GameAudio | null>(null);
   const audioMutedRef = useRef(false);
@@ -155,6 +173,21 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
   const [paused, setPaused] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
   const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
+  const [newBadges, setNewBadges] = useState<string[]>([]);
+  const [challengeResult, setChallengeResult] = useState<"won" | "lost" | null>(null);
+  const [challengeUrl, setChallengeUrl] = useState<string | null>(null);
+
+  // Power-up state refs
+  const shieldActiveRef = useRef(activePowerUps.has("shield"));
+  const [shieldActive, setShieldActive] = useState(activePowerUps.has("shield"));
+  const coinMagnetTimerRef = useRef(activePowerUps.has("coin_magnet") ? 30000 : 0);
+  const [coinMagnetTime, setCoinMagnetTime] = useState(activePowerUps.has("coin_magnet") ? 30 : 0);
+
+  // Tutorial overlay
+  const [showTutorial, setShowTutorial] = useState(() => {
+    try { return !localStorage.getItem("nimiq_racer_tutorial_seen"); } catch { return true; }
+  });
+
   const pausedRef = useRef(false);
   const touchStartRef = useRef<{ x: number; y: number; id: number } | null>(null);
   const [tiltEnabled, setTiltEnabled] = useState(false);
@@ -163,6 +196,15 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
   const tiltSmoothedRef = useRef(0); // smoothed gamma value (low-pass filtered)
   const tiltLastLaneChangeRef = useRef(0); // timestamp of last tilt-based lane change
   const tiltCurrentLaneRef = useRef(1); // what lane tilt thinks we're in (for hysteresis)
+
+  // Particle system
+  const particlesRef = useRef<{
+    mesh: THREE.Points;
+    velocities: Float32Array;
+    lifetimes: Float32Array;
+    startTime: number;
+    duration: number;
+  }[]>([]);
 
   // Crash sequence state
   const crashStateRef = useRef<{
@@ -187,6 +229,60 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
           mesh.material.dispose();
         }
       }
+    });
+  }, []);
+
+  // ── Particle effects ──
+  const spawnParticles = useCallback((
+    position: THREE.Vector3,
+    color: number,
+    count: number,
+    speed: number,
+    duration: number,
+  ) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    const lifetimes = new Float32Array(count);
+
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = position.x;
+      positions[i * 3 + 1] = position.y + 0.5;
+      positions[i * 3 + 2] = position.z;
+
+      // Random direction
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI;
+      const s = speed * (0.5 + Math.random() * 0.5);
+      velocities[i * 3] = Math.sin(phi) * Math.cos(theta) * s;
+      velocities[i * 3 + 1] = Math.abs(Math.cos(phi)) * s + 0.02;
+      velocities[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * s;
+
+      lifetimes[i] = duration * (0.5 + Math.random() * 0.5);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+    const mat = new THREE.PointsMaterial({
+      color,
+      size: 0.25,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+    });
+
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+
+    particlesRef.current.push({
+      mesh: points,
+      velocities,
+      lifetimes,
+      startTime: Date.now(),
+      duration,
     });
   }, []);
 
@@ -222,7 +318,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
   // ── Load high score ──
   useEffect(() => {
     const saved = localStorage.getItem("miniRacer_highScore");
-    if (saved) setHighScore(parseInt(saved));
+    if (saved) setHighScore(parseInt(saved, 10));
   }, []);
 
 
@@ -467,10 +563,10 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     const scene = sceneRef.current;
     if (!scene) return;
 
-    // Remove 3D objects attached to this segment
+    // Remove 3D objects attached to this segment and free GPU resources
     const objs = roadEventObjectsRef.current.get(segIdx);
     if (objs) {
-      objs.forEach((g) => scene.remove(g));
+      objs.forEach((g) => { disposeObject(g); scene.remove(g); });
       roadEventObjectsRef.current.delete(segIdx);
     }
 
@@ -479,15 +575,16 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       (z) => z.segIdx !== segIdx
     );
 
-    // Remove coin streaks for this segment
+    // Remove coin streaks for this segment and free GPU resources
     coinStreakRef.current = coinStreakRef.current.filter((c) => {
       if (c.segIdx === segIdx) {
+        disposeObject(c.mesh);
         scene.remove(c.mesh);
         return false;
       }
       return true;
     });
-  }, []);
+  }, [disposeObject]);
 
   const spawnRoadEvent = useCallback(
     (segIdx: number, segZ: number) => {
@@ -723,8 +820,9 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     const gs = gameStateRef.current;
     const cs = crashStateRef.current;
 
-    // Remove the obstacle we hit (if still in scene)
+    // Remove the obstacle we hit (if still in scene) and free GPU resources
     if (cs.hitObstacle && sceneRef.current) {
+      disposeObject(cs.hitObstacle);
       sceneRef.current.remove(cs.hitObstacle);
       const idx = obstaclesRef.current.indexOf(cs.hitObstacle as GameGroup);
       if (idx >= 0) obstaclesRef.current.splice(idx, 1);
@@ -735,6 +833,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     if (gs.lives <= 0) {
       // Game over
       audioRef.current?.playGameOver();
+      vibrate([200, 100, 200]); // game over haptic
       audioRef.current?.stopEngine();
       setGameRunning(false);
       gameRunningRef.current = false;
@@ -747,7 +846,18 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       const isNew = saveHighScore(gs.currentScore);
       if (isNew) showPopup(`NEW HIGH SCORE! ${gs.currentScore} pts!`);
 
+      // Check challenge result
+      if (challengeTarget) {
+        const won = gs.currentScore > challengeTarget.score;
+        setChallengeResult(won ? "won" : "lost");
+        acceptChallenge(challengeTarget.challengeId, {
+          username,
+          score: gs.currentScore,
+        }).catch(() => {});
+      }
+
       setSessionResult(null);
+      setNewBadges([]);
       submitSession({
         username,
         score: gameStatsRef.current.finalScore,
@@ -758,8 +868,14 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         durationSeconds: gameStatsRef.current.lapTime,
         carColor: toHexColor(selectedCarColor),
         deviceId: deviceId || undefined,
-      })
-        .then(setSessionResult)
+        powerUps: Array.from(activePowerUps),
+      } as any)
+        .then((result) => {
+          setSessionResult(result);
+          if ((result as any).newBadges?.length > 0) {
+            setNewBadges((result as any).newBadges);
+          }
+        })
         .catch(() => {});
     } else {
       // Respawn with brief invincibility blinking
@@ -777,11 +893,26 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         });
       }
     }
-  }, [saveHighScore, showPopup, username, selectedCarColor, deviceId]);
+  }, [saveHighScore, showPopup, username, selectedCarColor, deviceId, disposeObject, challengeTarget, activePowerUps]);
 
   // ── Lose a life — triggers crash freeze sequence ──
   const loseLife = useCallback((hitObstacle?: THREE.Group) => {
     if (!gameRunningRef.current || gameOver || crashStateRef.current.active) return;
+
+    // Shield absorbs the first hit
+    if (shieldActiveRef.current) {
+      shieldActiveRef.current = false;
+      setShieldActive(false);
+      // Remove the obstacle without losing a life
+      if (hitObstacle && sceneRef.current) {
+        disposeObject(hitObstacle);
+        sceneRef.current.remove(hitObstacle);
+        const idx = obstaclesRef.current.indexOf(hitObstacle as GameGroup);
+        if (idx >= 0) obstaclesRef.current.splice(idx, 1);
+      }
+      return;
+    }
+
     const gs = gameStateRef.current;
 
     gs.lives -= 1;
@@ -796,11 +927,17 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     };
 
     audioRef.current?.playCrash();
+    vibrate([100, 50, 100]); // crash haptic
+    // Crash sparks
+    if (carRef.current) {
+      spawnParticles(carRef.current.position.clone(), 0xff6600, 30, 0.08, 800);
+      spawnParticles(carRef.current.position.clone(), 0xffcc00, 15, 0.06, 600);
+    }
 
     // Red flash overlay
     setCrashFlash(true);
     setTimeout(() => setCrashFlash(false), 400);
-  }, [gameOver]);
+  }, [gameOver, disposeObject]);
 
   // ─────────────────────────────────────────────────────────
   // ANIMATION LOOP
@@ -814,10 +951,10 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       !carRef.current
     ) {
       // Refs not ready yet — wait a short delay instead of spinning rAF at 60fps doing nothing.
-      animationIdRef.current = window.setTimeout(() => {
-        animationIdRef.current = 0;
+      waitTimeoutRef.current = setTimeout(() => {
+        waitTimeoutRef.current = null;
         if (gameRunningRef.current) animate();
-      }, 50) as unknown as number;
+      }, 50);
       return;
     }
 
@@ -953,8 +1090,9 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     // (handled via keydown, sets carLaneRef)
     const targetX = LANE_CENTERS[carLaneRef.current];
     const dx = targetX - carXRef.current;
+    const effectiveLaneSpeed = CAR_LANE_SPEED + carStats.handlingBonus * 0.04;
     if (Math.abs(dx) > 0.05) {
-      carXRef.current += Math.sign(dx) * CAR_LANE_SPEED;
+      carXRef.current += Math.sign(dx) * effectiveLaneSpeed;
     } else {
       carXRef.current = targetX;
     }
@@ -1046,6 +1184,8 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         speedBoostActiveRef.current = true;
         setSpeedBoostActive(true);
         audioRef.current?.playSpeedBoost();
+        vibrate(25);
+        if (carRef.current) spawnParticles(carRef.current.position.clone(), 0x00aaff, 12, 0.05, 500);
         showPopup("SPEED BOOST!");
       }
     } else if (speedBoostActiveRef.current) {
@@ -1053,7 +1193,15 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       setSpeedBoostActive(false);
     }
 
+    // ── Coin magnet timer ──
+    if (coinMagnetTimerRef.current > 0) {
+      coinMagnetTimerRef.current -= deltaMs;
+      const secs = Math.max(0, Math.ceil(coinMagnetTimerRef.current / 1000));
+      setCoinMagnetTime((prev) => prev !== secs ? secs : prev);
+    }
+
     // ── Coin streak collection ──
+    const coinPickupRadius = coinMagnetTimerRef.current > 0 ? 3.5 : 1.5;
     let coinsCollectedThisFrame = 0;
     for (let i = coinStreakRef.current.length - 1; i >= 0; i--) {
       const coin = coinStreakRef.current[i];
@@ -1062,16 +1210,26 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       // Bob coins (higher amplitude)
       coin.mesh.position.y = 1.2 + Math.sin(time * 5 + i * 0.4) * 0.25;
 
-      // Collect (slightly larger pickup radius)
+      // Collect (coin magnet increases pickup radius)
       const cdz = Math.abs(coin.mesh.position.z - car.position.z);
       const cdx = Math.abs(coin.mesh.position.x - car.position.x);
-      if (cdz < 2.0 && cdx < 1.5) {
+      if (cdz < 2.0 && cdx < coinPickupRadius) {
+        coin.mesh.traverse((child) => {
+          const m = child as THREE.Mesh;
+          if (m.isMesh) {
+            m.geometry?.dispose();
+            if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
+            else m.material?.dispose();
+          }
+        });
         scene.remove(coin.mesh);
         coinStreakRef.current.splice(i, 1);
         gs.currentScore += 10;
         gs.coinsCollected += 1;
         coinsCollectedThisFrame++;
         audioRef.current?.playCoinCollect();
+        vibrate(15); // coin haptic
+        spawnParticles(coin.mesh.position.clone(), 0xffd700, 8, 0.04, 400);
       }
     }
     // Batch React state updates — only trigger re-render once per frame for coins
@@ -1158,8 +1316,16 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     for (let i = obstaclesRef.current.length - 1; i >= 0; i--) {
       const obs = obstaclesRef.current[i];
 
-      // Passed behind car — remove and score
+      // Passed behind car — remove, dispose GPU resources, and score
       if (obs.position.z > 5) {
+        obs.traverse((child) => {
+          const m = child as THREE.Mesh;
+          if (m.isMesh) {
+            m.geometry?.dispose();
+            if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
+            else m.material?.dispose();
+          }
+        });
         scene.remove(obs);
         obstaclesRef.current.splice(i, 1);
         gs.currentScore += 5;
@@ -1196,6 +1362,8 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         setScore(gs.currentScore);
         gameStatsRef.current.bonusBoxesCollected++;
         audioRef.current?.playBonusCollect();
+        vibrate([30, 20, 30]); // bonus haptic
+        spawnParticles(box.position.clone(), 0x22cc44, 20, 0.06, 600);
         showPopup("+30 BONUS!");
       }
     }
@@ -1213,6 +1381,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         scene.remove(key);
         goldenKeysRef.current.splice(i, 1);
         audioRef.current?.playKeyCollect();
+        vibrate([20, 10, 20, 10, 40]); // key haptic
         activateInvisibility();
       }
     }
@@ -1220,6 +1389,31 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     // ── Gradual difficulty ──
     gs.baseGameSpeed += 0.000006;
     gs.obstacleSpawnRate = Math.min(0.018, gs.obstacleSpawnRate + 0.0000015);
+
+    // ── Update particles ──
+    const particleNow = Date.now();
+    for (let p = particlesRef.current.length - 1; p >= 0; p--) {
+      const particle = particlesRef.current[p];
+      const elapsed = particleNow - particle.startTime;
+      if (elapsed > particle.duration) {
+        particle.mesh.geometry.dispose();
+        (particle.mesh.material as THREE.Material).dispose();
+        scene.remove(particle.mesh);
+        particlesRef.current.splice(p, 1);
+        continue;
+      }
+      const posAttr = particle.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      const dt = deltaMs / 1000;
+      for (let i = 0; i < arr.length / 3; i++) {
+        arr[i * 3] += particle.velocities[i * 3] * dt;
+        arr[i * 3 + 1] += particle.velocities[i * 3 + 1] * dt;
+        arr[i * 3 + 2] += particle.velocities[i * 3 + 2] * dt;
+        particle.velocities[i * 3 + 1] -= 0.05 * dt; // gravity
+      }
+      posAttr.needsUpdate = true;
+      (particle.mesh.material as THREE.PointsMaterial).opacity = Math.max(0, 1 - elapsed / particle.duration);
+    }
 
     renderer.render(scene, camera);
     animationIdRef.current = requestAnimationFrame(animate);
@@ -1234,6 +1428,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     showPopup,
     loseLife,
     finishCrash,
+    spawnParticles,
   ]);
 
   // ── Pause / Resume ──
@@ -1253,6 +1448,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         setPaused(true);
         cancelAnimationFrame(animationIdRef.current);
         animationIdRef.current = 0;
+        if (waitTimeoutRef.current) { clearTimeout(waitTimeoutRef.current); waitTimeoutRef.current = null; }
         gameRunningRef.current = false;
         audioRef.current?.mute();
       } else {
@@ -1664,6 +1860,11 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       lapTime: 0,
     };
 
+    // Apply power-ups and car stats
+    const startingLives = 3 + (activePowerUps.has("extra_life") ? 1 : 0) + carStats.durabilityBonus;
+    const startingScore = activePowerUps.has("head_start") ? 150 : 0;
+    const maxSpeed = 1.1 + carStats.speedBonus;
+
     gameStateRef.current = {
       baseGameSpeed: 0.005,
       speedMultiplier: 0.7,
@@ -1674,29 +1875,44 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       keySpawnInterval: 40,
       isInvisible: false,
       invisibilityTimer: 0,
-      currentScore: 0,
-      maxSpeed: 1.1,
+      currentScore: startingScore,
+      maxSpeed,
       coinsCollected: 0,
-      lives: 3,
+      lives: startingLives,
       respawnInvincible: false,
       respawnTimer: 0,
     };
 
-    setScore(0);
+    // Reset power-up state
+    shieldActiveRef.current = activePowerUps.has("shield");
+    setShieldActive(activePowerUps.has("shield"));
+    coinMagnetTimerRef.current = activePowerUps.has("coin_magnet") ? 30000 : 0;
+    setCoinMagnetTime(activePowerUps.has("coin_magnet") ? 30 : 0);
+
+    setScore(startingScore);
     setSpeed(0.7);
     setCoins(0);
-    setLives(3);
+    setLives(startingLives);
     setGameOver(false);
     setIsNewHighScore(false);
     setInvisibilityActive(false);
     setInvisibilityCountdown(0);
+    setNewBadges([]);
+    setChallengeResult(null);
+    setChallengeUrl(null);
 
     lastFrameTimeRef.current = 0;
     setGameRunning(true);
     gameRunningRef.current = true;
-    setTimeout(() => animate(), 50);
+    setTimeout(() => {
+      animate();
+      // Auto-pause for tutorial on first play
+      if (showTutorial) {
+        setTimeout(() => togglePauseRef.current(), 200);
+      }
+    }, 50);
     logEvent("game_start", username, { carColor: toHexColor(selectedCarColor) });
-  }, [animate, buildRoadSegment, username, selectedCarColor]);
+  }, [animate, buildRoadSegment, username, selectedCarColor, activePowerUps, carStats]);
 
   // ─────────────────────────────────────────────────────────
   // CONTROLS
@@ -1717,12 +1933,14 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
           keysRef.current.left = true;
           carLaneRef.current = Math.max(0, carLaneRef.current - 1);
           audioRef.current?.playLaneChange();
+          vibrate(10);
           break;
         case "KeyD":
         case "ArrowRight":
           keysRef.current.right = true;
           carLaneRef.current = Math.min(LANE_COUNT - 1, carLaneRef.current + 1);
           audioRef.current?.playLaneChange();
+          vibrate(10);
           break;
         case "ArrowUp":
         case "KeyW":
@@ -1927,6 +2145,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       gameRunningRef.current = false;
       cancelAnimationFrame(animationIdRef.current);
       animationIdRef.current = 0;
+      if (waitTimeoutRef.current) { clearTimeout(waitTimeoutRef.current); waitTimeoutRef.current = null; }
     }
   }, [gameRunning, animate]);
 
@@ -1962,7 +2181,10 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
 
   useEffect(() => {
     return () => {
+      // Stop the game loop immediately
+      gameRunningRef.current = false;
       if (animationIdRef.current) cancelAnimationFrame(animationIdRef.current);
+      if (waitTimeoutRef.current) { clearTimeout(waitTimeoutRef.current); waitTimeoutRef.current = null; }
       audioRef.current?.dispose();
       audioRef.current = null;
       // Dispose the entire scene tree to free GPU memory
@@ -1979,9 +2201,22 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
           }
         });
       }
+      // Clear dynamic object arrays so refs don't hold stale Three.js objects
+      obstaclesRef.current = [];
+      bonusBoxesRef.current = [];
+      goldenKeysRef.current = [];
+      coinStreakRef.current = [];
+      roadEventObjectsRef.current.clear();
+      speedBoostZonesRef.current = [];
+      roadSegsRef.current = [];
+      buildingGroupsRef.current = [];
+      treeGroupsRef.current = [];
+      wheelMeshesRef.current = [];
+
       if (sharedRef.current) {
         Object.values(sharedRef.current.geos).forEach((g) => g.dispose());
         Object.values(sharedRef.current.mats).forEach((m) => m.dispose());
+        sharedRef.current = null;
       }
       if (rendererRef.current) {
         try {
@@ -1991,7 +2226,11 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         } catch (_) {
           /* cleanup */
         }
+        rendererRef.current = null;
       }
+      sceneRef.current = null;
+      cameraRef.current = null;
+      carRef.current = null;
     };
   }, []);
 
@@ -2002,6 +2241,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       cancelAnimationFrame(animationIdRef.current);
       animationIdRef.current = 0;
     }
+    if (waitTimeoutRef.current) { clearTimeout(waitTimeoutRef.current); waitTimeoutRef.current = null; }
     const scene = sceneRef.current;
     if (scene) {
       // Dispose and remove dynamic game objects
@@ -2020,6 +2260,14 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
       coinStreakRef.current.forEach((c) => { disposeObject(c.mesh); scene.remove(c.mesh); });
       coinStreakRef.current = [];
       speedBoostZonesRef.current = [];
+
+      // Clean up particles
+      particlesRef.current.forEach((p) => {
+        p.mesh.geometry.dispose();
+        (p.mesh.material as THREE.Material).dispose();
+        scene.remove(p.mesh);
+      });
+      particlesRef.current = [];
 
       // Dispose the entire scene tree (road segments, buildings, trees, car, lights, sky)
       scene.traverse((child) => {
@@ -2072,6 +2320,9 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
     tiltCurrentLaneRef.current = 1;
     crashStateRef.current = { active: false, timer: 0, shakeIntensity: 0, hitObstacle: null };
     setSessionResult(null);
+    setNewBadges([]);
+    setChallengeResult(null);
+    setChallengeUrl(null);
     setTimeout(() => initializeGame(), 100);
   }, [initializeGame, disposeObject]);
 
@@ -2215,6 +2466,65 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
           >
             {username}
           </div>
+
+          {/* Challenge target */}
+          {challengeTarget && (
+            <div
+              style={{
+                position: "absolute",
+                top: 42,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "rgba(255,170,0,0.35)",
+                borderRadius: 8,
+                padding: "3px 14px",
+                color: "#ffcc44",
+                fontSize: 12,
+                fontWeight: "bold",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Beat {challengeTarget.username}: {challengeTarget.score} pts
+            </div>
+          )}
+
+          {/* Shield indicator */}
+          {shieldActive && (
+            <div
+              style={{
+                position: "absolute",
+                top: 42,
+                left: 16,
+                background: "rgba(68,170,255,0.35)",
+                borderRadius: 8,
+                padding: "3px 10px",
+                color: "#44aaff",
+                fontSize: 12,
+                fontWeight: "bold",
+              }}
+            >
+              SHIELD
+            </div>
+          )}
+
+          {/* Coin Magnet timer */}
+          {coinMagnetTime > 0 && (
+            <div
+              style={{
+                position: "absolute",
+                top: 58,
+                left: 16,
+                background: "rgba(255,215,0,0.35)",
+                borderRadius: 8,
+                padding: "3px 10px",
+                color: "#ffd700",
+                fontSize: 12,
+                fontWeight: "bold",
+              }}
+            >
+              MAGNET {coinMagnetTime}s
+            </div>
+          )}
 
           {/* Speed boost */}
           {speedBoostActive && (
@@ -2511,6 +2821,85 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
         </div>
       )}
 
+      {/* Tutorial Overlay */}
+      {showTutorial && gameRunning && !gameOver && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "100%",
+            background: "rgba(0,0,0,0.75)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 20,
+          }}
+        >
+          <div
+            style={{
+              background: "rgba(10,10,30,0.95)",
+              borderRadius: 20,
+              padding: "32px 36px",
+              textAlign: "center",
+              color: "#fff",
+              maxWidth: 360,
+              width: "90%",
+            }}
+          >
+            <h2 style={{ fontSize: 28, marginBottom: 16, marginTop: 0 }}>How to Play</h2>
+
+            {"ontouchstart" in window ? (
+              <div style={{ textAlign: "left", fontSize: 14, lineHeight: 1.8 }}>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>Swipe Left/Right</span> — Change lanes</div>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>Swipe Up</span> — Speed up</div>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>Swipe Down</span> — Brake</div>
+                <div style={{ marginTop: 8 }}><span style={{ color: "#22cc88", fontWeight: "bold" }}>Tilt</span> — Enable tilt steering (top right)</div>
+              </div>
+            ) : (
+              <div style={{ textAlign: "left", fontSize: 14, lineHeight: 1.8 }}>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>A/D or Arrow Keys</span> — Change lanes</div>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>W or Arrow Up</span> — Speed up</div>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>S or Arrow Down</span> — Brake</div>
+                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>P or ESC</span> — Pause</div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 16, fontSize: 13, opacity: 0.7, lineHeight: 1.6 }}>
+              <div><span style={{ color: "#ffd700" }}>&#9679;</span> Collect coins for points</div>
+              <div><span style={{ color: "#22cc44" }}>&#9632;</span> Grab green bonus boxes</div>
+              <div><span style={{ color: "#ffd700" }}>&#9670;</span> Golden keys grant invisibility</div>
+              <div><span style={{ color: "#ff4444" }}>&#9829;</span> You have 3 lives — avoid obstacles!</div>
+            </div>
+
+            <button
+              onClick={() => {
+                setShowTutorial(false);
+                try { localStorage.setItem("nimiq_racer_tutorial_seen", "1"); } catch { /* */ }
+                // Unpause the game if it was auto-paused for the tutorial
+                if (pausedRef.current) togglePause();
+              }}
+              style={{
+                width: "100%",
+                padding: 14,
+                borderRadius: 12,
+                border: "none",
+                background: "linear-gradient(45deg, #22cc88, #44ddaa)",
+                color: "#1a1a2e",
+                fontSize: 18,
+                fontWeight: "bold",
+                cursor: "pointer",
+                marginTop: 20,
+                touchAction: "none",
+              }}
+            >
+              Got it!
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Game Over */}
       {gameOver && (
         <div
@@ -2595,6 +2984,71 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
               &nbsp;&middot;&nbsp;
               {gameStatsRef.current.bonusBoxesCollected} bonuses collected
             </div>
+            {/* Challenge result */}
+            {challengeResult && (
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: "bold",
+                  marginBottom: 12,
+                  color: challengeResult === "won" ? "#22cc88" : "#ff6644",
+                  background: challengeResult === "won" ? "rgba(34,204,136,0.15)" : "rgba(255,68,68,0.15)",
+                  borderRadius: 10,
+                  padding: "8px 16px",
+                }}
+              >
+                {challengeResult === "won"
+                  ? `You beat ${challengeTarget?.username}'s ${challengeTarget?.score} pts!`
+                  : `${challengeTarget?.username} wins! (${challengeTarget?.score} pts)`}
+              </div>
+            )}
+
+            {/* New badges */}
+            {newBadges.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: "#ffd700", fontWeight: "bold", marginBottom: 6 }}>
+                  New Badges Unlocked!
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+                  {newBadges.map((badge) => {
+                    const info: Record<string, { name: string; icon: string; color: string }> = {
+                      rookie: { name: "Rookie", icon: "R", color: "#88cc88" },
+                      road_warrior: { name: "Road Warrior", icon: "W", color: "#ff8844" },
+                      speed_demon: { name: "Speed Demon", icon: "S", color: "#ff4444" },
+                      coin_hunter: { name: "Coin Hunter", icon: "C", color: "#ffd700" },
+                      dodger: { name: "Dodger", icon: "D", color: "#44aaff" },
+                      veteran: { name: "Veteran", icon: "V", color: "#cc44cc" },
+                      endurance: { name: "Endurance", icon: "E", color: "#22cc88" },
+                    };
+                    const b = info[badge];
+                    if (!b) return null;
+                    return (
+                      <div key={badge} style={{ textAlign: "center" }}>
+                        <div
+                          style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: "50%",
+                            background: b.color,
+                            color: "#000",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 14,
+                            fontWeight: "bold",
+                            margin: "0 auto 4px",
+                          }}
+                        >
+                          {b.icon}
+                        </div>
+                        <div style={{ fontSize: 9, opacity: 0.7 }}>{b.name}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {sessionResult && (
               <div
                 style={{
@@ -2606,7 +3060,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
               >
                 Global rank #{sessionResult.rank} of {sessionResult.totalPlayers}{" "}
                 {sessionResult.totalPlayers === 1 ? "player" : "players"}
-                {sessionResult.isPersonalBest && " · Personal best!"}
+                {sessionResult.isPersonalBest && " \u00b7 Personal best!"}
               </div>
             )}
             {sessionResult && (
@@ -2614,6 +3068,38 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({ username, sel
                 <Leaderboard limit={5} highlightUsername={username} compact title="Top Racers" />
               </div>
             )}
+
+            {/* Challenge a Friend button */}
+            <button
+              onClick={async () => {
+                try {
+                  const result = await createChallenge({
+                    username,
+                    score: gameStatsRef.current.finalScore,
+                    deviceId: deviceId || undefined,
+                  });
+                  const url = `${window.location.origin}${window.location.pathname}?challenge=${result.id}`;
+                  setChallengeUrl(url);
+                  try { await navigator.clipboard.writeText(url); } catch { /* */ }
+                } catch { /* */ }
+              }}
+              style={{
+                width: "100%",
+                padding: 12,
+                borderRadius: 12,
+                border: "2px solid rgba(255,170,0,0.5)",
+                background: challengeUrl ? "rgba(34,204,136,0.15)" : "rgba(255,170,0,0.15)",
+                color: challengeUrl ? "#22cc88" : "#ffcc44",
+                fontSize: 15,
+                fontWeight: "bold",
+                cursor: "pointer",
+                marginBottom: 10,
+                transition: "all 0.2s",
+              }}
+            >
+              {challengeUrl ? "Link Copied!" : "Challenge a Friend"}
+            </button>
+
             <button
               onClick={handleRestart}
               style={{
