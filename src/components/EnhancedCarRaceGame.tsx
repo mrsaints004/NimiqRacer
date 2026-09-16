@@ -1091,7 +1091,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     const targetX = LANE_CENTERS[carLaneRef.current];
     const dx = targetX - carXRef.current;
     const effectiveLaneSpeed = CAR_LANE_SPEED + carStats.handlingBonus * 0.04;
-    if (Math.abs(dx) > 0.05) {
+    if (Math.abs(dx) > effectiveLaneSpeed) {
       carXRef.current += Math.sign(dx) * effectiveLaneSpeed;
     } else {
       carXRef.current = targetX;
@@ -1104,9 +1104,9 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     car.position.x = carXRef.current;
     setCurrentLane(carLaneRef.current);
 
-    // Slight car tilt when turning
-    const tiltTarget = -dx * 0.06;
-    car.rotation.z += (tiltTarget - car.rotation.z) * 0.1;
+    // Slight car tilt when turning (smooth)
+    const tiltTarget = carXRef.current === targetX ? 0 : -Math.sign(dx) * 0.04;
+    car.rotation.z += (tiltTarget - car.rotation.z) * 0.15;
 
     // ── Distance / score ──
     const newDist = Math.floor(
@@ -1121,16 +1121,16 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     }
     gameStatsRef.current.distance = newDist;
 
-    // ── Chase camera ──
+    // ── Chase camera (smooth follow) ──
     const speedNorm = Math.min(gs.speedMultiplier / gs.maxSpeed, 1.0);
     const camTarget = new THREE.Vector3(
-      car.position.x * 0.25,
+      car.position.x * 0.15,
       3.2 + speedNorm * 0.8,
       car.position.z + 8 + speedNorm * 2
     );
-    camera.position.lerp(camTarget, 0.06);
+    camera.position.lerp(camTarget, 0.08);
     camera.lookAt(
-      car.position.x * 0.5,
+      car.position.x * 0.3,
       0.8,
       car.position.z - 15 - speedNorm * 8
     );
@@ -2621,7 +2621,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
               right: 16,
               background: "rgba(0,0,0,0.55)",
               borderRadius: 10,
-              padding: "6px 12px",
+              padding: "10px 14px",
               color: "#fff",
               fontSize: 20,
               fontWeight: "bold",
@@ -2658,7 +2658,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
               right: 60,
               background: "rgba(0,0,0,0.55)",
               borderRadius: 10,
-              padding: "6px 12px",
+              padding: "10px 14px",
               color: "#fff",
               fontSize: 20,
               fontWeight: "bold",
@@ -2684,7 +2684,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
                   ? "rgba(34,204,136,0.65)"
                   : "rgba(0,0,0,0.55)",
                 borderRadius: 10,
-                padding: "6px 12px",
+                padding: "10px 14px",
                 color: "#fff",
                 fontSize: 13,
                 fontWeight: "bold",
@@ -2919,11 +2919,13 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
             style={{
               background: "rgba(10,10,20,0.9)",
               borderRadius: 20,
-              padding: "36px 40px",
+              padding: "28px 24px",
               textAlign: "center",
               color: "#fff",
               maxWidth: 380,
               width: "90%",
+              maxHeight: "90vh",
+              overflowY: "auto",
             }}
           >
             <h2 style={{ fontSize: 34, marginBottom: 6 }}>Game Over</h2>
@@ -2940,7 +2942,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
               </div>
             )}
             <div
-              style={{ fontSize: 52, fontWeight: "bold", marginBottom: 6 }}
+              style={{ fontSize: "min(52px, 12vw)", fontWeight: "bold", marginBottom: 6 }}
             >
               {gameStatsRef.current.finalScore}
               <span
@@ -2977,7 +2979,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
               style={{
                 fontSize: 13,
                 opacity: 0.4,
-                marginBottom: 22,
+                marginBottom: 16,
               }}
             >
               Avoided {gameStatsRef.current.obstaclesAvoided} obstacles
@@ -3000,6 +3002,94 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
                 {challengeResult === "won"
                   ? `You beat ${challengeTarget?.username}'s ${challengeTarget?.score} pts!`
                   : `${challengeTarget?.username} wins! (${challengeTarget?.score} pts)`}
+              </div>
+            )}
+
+            {/* Challenge a Friend — prominent placement right after score */}
+            <div
+              style={{
+                background: challengeUrl
+                  ? "linear-gradient(135deg, rgba(34,204,136,0.2), rgba(34,204,136,0.05))"
+                  : "linear-gradient(135deg, rgba(255,170,0,0.2), rgba(255,100,0,0.05))",
+                border: challengeUrl
+                  ? "2px solid rgba(34,204,136,0.6)"
+                  : "2px solid rgba(255,170,0,0.6)",
+                borderRadius: 16,
+                padding: "16px",
+                marginBottom: 18,
+                textAlign: "center",
+              }}
+            >
+              <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 8, color: "#fff" }}>
+                Think your friends can beat your score?
+              </div>
+              <button
+                onClick={async () => {
+                  try {
+                    const result = await createChallenge({
+                      username,
+                      score: gameStatsRef.current.finalScore,
+                      deviceId: deviceId || undefined,
+                    });
+                    const url = `${window.location.origin}${window.location.pathname}?challenge=${result.id}`;
+                    setChallengeUrl(url);
+                    try { await navigator.clipboard.writeText(url); } catch { /* */ }
+                    if (navigator.share) {
+                      try {
+                        await navigator.share({
+                          title: "Nimiq Racer Challenge",
+                          text: `I scored ${gameStatsRef.current.finalScore} pts in Nimiq Racer! Can you beat me?`,
+                          url,
+                        });
+                      } catch { /* user cancelled share */ }
+                    }
+                  } catch { /* */ }
+                }}
+                style={{
+                  width: "100%",
+                  padding: "14px 20px",
+                  borderRadius: 12,
+                  border: "none",
+                  background: challengeUrl
+                    ? "linear-gradient(135deg, #22cc88, #1aaa70)"
+                    : "linear-gradient(135deg, #ffaa00, #ff6600)",
+                  color: challengeUrl ? "#fff" : "#111",
+                  fontSize: 16,
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  transition: "transform 0.1s",
+                  boxShadow: challengeUrl
+                    ? "0 4px 20px rgba(34,204,136,0.4)"
+                    : "0 4px 20px rgba(255,170,0,0.4)",
+                }}
+                onMouseDown={(e) =>
+                  (e.currentTarget.style.transform = "scale(0.97)")
+                }
+                onMouseUp={(e) =>
+                  (e.currentTarget.style.transform = "scale(1)")
+                }
+              >
+                {challengeUrl ? "Link Copied! Share it!" : "Challenge a Friend"}
+              </button>
+              {challengeUrl && (
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8, color: "#fff", wordBreak: "break-all" }}>
+                  {challengeUrl}
+                </div>
+              )}
+            </div>
+
+            {sessionResult && (
+              <div
+                style={{
+                  fontSize: 14,
+                  color: "#77ccff",
+                  fontWeight: "bold",
+                  marginBottom: 12,
+                }}
+              >
+                Global rank #{sessionResult.rank} of {sessionResult.totalPlayers}{" "}
+                {sessionResult.totalPlayers === 1 ? "player" : "players"}
+                {sessionResult.isPersonalBest && " \u00b7 Personal best!"}
               </div>
             )}
 
@@ -3050,55 +3140,10 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
             )}
 
             {sessionResult && (
-              <div
-                style={{
-                  fontSize: 14,
-                  color: "#77ccff",
-                  fontWeight: "bold",
-                  marginBottom: 22,
-                }}
-              >
-                Global rank #{sessionResult.rank} of {sessionResult.totalPlayers}{" "}
-                {sessionResult.totalPlayers === 1 ? "player" : "players"}
-                {sessionResult.isPersonalBest && " \u00b7 Personal best!"}
-              </div>
-            )}
-            {sessionResult && (
               <div style={{ marginBottom: 22 }}>
                 <Leaderboard limit={5} highlightUsername={username} compact title="Top Racers" />
               </div>
             )}
-
-            {/* Challenge a Friend button */}
-            <button
-              onClick={async () => {
-                try {
-                  const result = await createChallenge({
-                    username,
-                    score: gameStatsRef.current.finalScore,
-                    deviceId: deviceId || undefined,
-                  });
-                  const url = `${window.location.origin}${window.location.pathname}?challenge=${result.id}`;
-                  setChallengeUrl(url);
-                  try { await navigator.clipboard.writeText(url); } catch { /* */ }
-                } catch { /* */ }
-              }}
-              style={{
-                width: "100%",
-                padding: 12,
-                borderRadius: 12,
-                border: "2px solid rgba(255,170,0,0.5)",
-                background: challengeUrl ? "rgba(34,204,136,0.15)" : "rgba(255,170,0,0.15)",
-                color: challengeUrl ? "#22cc88" : "#ffcc44",
-                fontSize: 15,
-                fontWeight: "bold",
-                cursor: "pointer",
-                marginBottom: 10,
-                transition: "all 0.2s",
-              }}
-            >
-              {challengeUrl ? "Link Copied!" : "Challenge a Friend"}
-            </button>
 
             <button
               onClick={handleRestart}

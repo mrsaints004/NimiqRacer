@@ -39,6 +39,40 @@ function saveUsername(name: string) {
   try { localStorage.setItem(USERNAME_KEY, name); } catch { /* */ }
 }
 
+// ── Global CSS animations ──
+const GLOBAL_STYLES = `
+  @keyframes titleGlow {
+    0%, 100% { text-shadow: 0 0 20px rgba(34,204,136,0.3), 0 0 60px rgba(34,204,136,0.1); }
+    50% { text-shadow: 0 0 30px rgba(34,204,136,0.5), 0 0 80px rgba(34,204,136,0.2); }
+  }
+  @keyframes subtitleSlide {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 0.85; transform: translateY(0); }
+  }
+  @keyframes cardFadeIn {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes roadLine {
+    from { transform: translateY(-20px); }
+    to { transform: translateY(20px); }
+  }
+  @keyframes loadPulse { 0%,100% { opacity:0.6; } 50% { opacity:1; } }
+  @keyframes loadBar { 0% { width:5%; } 50% { width:75%; } 100% { width:95%; } }
+  @keyframes shimmer {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+  @keyframes streakPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34,204,136,0.4); }
+    50% { box-shadow: 0 0 0 6px rgba(34,204,136,0); }
+  }
+`;
+
 // ── Car options with performance tiers ──
 
 interface CarOption {
@@ -72,13 +106,14 @@ interface PowerUpDef {
   description: string;
   priceLuna: number;
   color: string;
+  icon: string;
 }
 
 const POWER_UPS: PowerUpDef[] = [
-  { id: "extra_life", name: "Extra Life", description: "Start with 4 lives instead of 3", priceLuna: 20000, color: "#ff4444" },
-  { id: "coin_magnet", name: "Coin Magnet", description: "2x coin pickup radius for 30s", priceLuna: 30000, color: "#ffd700" },
-  { id: "head_start", name: "Head Start", description: "Begin with 150 bonus points", priceLuna: 10000, color: "#22cc88" },
-  { id: "shield", name: "Shield", description: "First crash is free (no life lost)", priceLuna: 50000, color: "#44aaff" },
+  { id: "extra_life", name: "Extra Life", description: "Start with 4 lives instead of 3", priceLuna: 20000, color: "#ff4444", icon: "\u2764" },
+  { id: "coin_magnet", name: "Coin Magnet", description: "2x coin pickup radius for 30s", priceLuna: 30000, color: "#ffd700", icon: "\u25C9" },
+  { id: "head_start", name: "Head Start", description: "Begin with 150 bonus points", priceLuna: 10000, color: "#22cc88", icon: "\u25B6" },
+  { id: "shield", name: "Shield", description: "First crash is free (no life lost)", priceLuna: 50000, color: "#44aaff", icon: "\u25C6" },
 ];
 
 // ── Achievement badge info ──
@@ -92,6 +127,36 @@ const BADGE_INFO: Record<string, { name: string; icon: string; color: string }> 
   veteran: { name: "Veteran", icon: "V", color: "#cc44cc" },
   endurance: { name: "Endurance", icon: "E", color: "#22cc88" },
 };
+
+// ── Decorative road lines background ──
+function RoadLines() {
+  return (
+    <div style={{
+      position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
+      overflow: "hidden", pointerEvents: "none", zIndex: 0,
+    }}>
+      {/* Center dashed road line */}
+      <div style={{
+        position: "absolute", left: "50%", top: 0, width: 3, height: "100%",
+        opacity: 0.06,
+      }}>
+        {Array.from({ length: 12 }).map((_, i) => (
+          <div key={i} style={{
+            width: 3, height: 30, background: "white", borderRadius: 2,
+            marginBottom: 20, animation: "roadLine 1.5s linear infinite",
+          }} />
+        ))}
+      </div>
+      {/* Side lane marks */}
+      {[-120, 120].map((offset) => (
+        <div key={offset} style={{
+          position: "absolute", left: `calc(50% + ${offset}px)`, top: 0,
+          width: 2, height: "100%", background: "rgba(255,255,255,0.03)",
+        }} />
+      ))}
+    </div>
+  );
+}
 
 function GameWrapper() {
   const { isReady, deviceId } = useNimiq();
@@ -163,12 +228,9 @@ function GameWrapper() {
 
   const isCarAvailable = useCallback(
     (car: CarOption, idx: number) => {
-      // Free base cars
       if (!car.premium && idx < 6) return true;
-      // Streak cars
       if (car.name === "Streak Racer") return streakCount >= 7;
       if (car.name === "Gold Racer") return streakCount >= 30;
-      // Premium purchased
       return ownedCarHexes.has(car.hex);
     },
     [ownedCarHexes, streakCount]
@@ -197,7 +259,7 @@ function GameWrapper() {
       }
 
       if (!isReady || !NIM_RECIPIENT) {
-        setPurchaseError("Shop unavailable — open in Nimiq Pay");
+        setPurchaseError("Shop unavailable \u2014 open in Nimiq Pay");
         setTimeout(() => setPurchaseError(null), 3000);
         return;
       }
@@ -242,7 +304,6 @@ function GameWrapper() {
   const handlePowerUpBuy = useCallback(async (powerUp: PowerUpDef) => {
     if (!deviceId || !isReady || !NIM_RECIPIENT) return;
     if (selectedPowerUps.has(powerUp.id)) {
-      // Deselect
       setSelectedPowerUps((prev) => {
         const next = new Set(prev);
         next.delete(powerUp.id);
@@ -305,6 +366,7 @@ function GameWrapper() {
 
   const carStats = CAR_OPTIONS[selectedCar];
 
+  // ── Playing state ──
   if (step === "playing") {
     return (
       <Suspense
@@ -316,25 +378,27 @@ function GameWrapper() {
               flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
-              background: "linear-gradient(135deg, #1a3a5c 0%, #2266cc 50%, #77bbff 100%)",
+              background: "linear-gradient(135deg, #0d1b2a 0%, #1b2d4a 30%, #1a3a5c 60%, #2266cc 100%)",
               color: "white",
               gap: 24,
             }}
           >
-            <style>{`
-              @keyframes loadPulse { 0%,100% { opacity:0.6; } 50% { opacity:1; } }
-              @keyframes loadBar { 0% { width:5%; } 50% { width:75%; } 100% { width:95%; } }
-            `}</style>
-            <div style={{ fontSize: 42, fontWeight: 900, letterSpacing: -2 }}>Nimiq Racer</div>
-            <div style={{ width: 220, height: 6, borderRadius: 3, background: "rgba(255,255,255,0.15)", overflow: "hidden" }}>
+            <style>{GLOBAL_STYLES}</style>
+            <div style={{
+              fontSize: 42, fontWeight: 900, letterSpacing: -2,
+              animation: "titleGlow 2s ease-in-out infinite",
+            }}>
+              Nimiq Racer
+            </div>
+            <div style={{ width: 220, height: 6, borderRadius: 3, background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
               <div style={{
-                height: "100%",
-                borderRadius: 3,
-                background: "linear-gradient(90deg, #22cc88, #44ddaa)",
-                animation: "loadBar 2s ease-in-out infinite",
+                height: "100%", borderRadius: 3,
+                background: "linear-gradient(90deg, #22cc88, #44ddaa, #22cc88)",
+                backgroundSize: "200% 100%",
+                animation: "loadBar 2s ease-in-out infinite, shimmer 1.5s linear infinite",
               }} />
             </div>
-            <div style={{ fontSize: 14, opacity: 0.6, animation: "loadPulse 1.5s ease-in-out infinite" }}>
+            <div style={{ fontSize: 14, opacity: 0.5, animation: "loadPulse 1.5s ease-in-out infinite" }}>
               Preparing the track...
             </div>
           </div>
@@ -363,91 +427,142 @@ function GameWrapper() {
     );
   }
 
-  // Stat bar helper
+  // ── Stat bar helper ──
   const StatBar = ({ label, value, max, color }: { label: string; value: number; max: number; color: string }) => (
     <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, marginTop: 2 }}>
       <span style={{ color: "rgba(255,255,255,0.5)", width: 28, textAlign: "right" }}>{label}</span>
       <div style={{ flex: 1, height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2 }}>
-        <div style={{ width: `${(value / max) * 100}%`, height: "100%", background: color, borderRadius: 2 }} />
+        <div style={{ width: `${(value / max) * 100}%`, height: "100%", background: color, borderRadius: 2, transition: "width 0.3s" }} />
       </div>
     </div>
   );
 
+  // ── Landing / Menu UI ──
   return (
     <div
       style={{
         minHeight: "100vh",
-        background: "linear-gradient(135deg, #1a3a5c 0%, #2266cc 50%, #77bbff 100%)",
+        background: "linear-gradient(135deg, #0d1b2a 0%, #1b2d4a 30%, #1a3a5c 60%, #2266cc 100%)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         position: "relative",
         padding: "20px",
+        overflow: "hidden",
       }}
     >
-      <button
-        onClick={() => setShowLeaderboard((v) => !v)}
-        style={{
-          position: "absolute",
-          top: "20px",
-          left: "20px",
-          zIndex: 50,
-          background: "rgba(0,0,0,0.25)",
-          border: "1px solid rgba(255,255,255,0.25)",
-          borderRadius: 10,
-          color: "white",
-          fontSize: 14,
-          fontWeight: "bold",
-          padding: "10px 14px",
-          cursor: "pointer",
-        }}
-      >
-        {showLeaderboard ? "\u2190 Back" : "Leaderboard"}
-      </button>
+      <style>{GLOBAL_STYLES}</style>
+      <RoadLines />
+
+      {/* Top bar */}
+      <div style={{
+        position: "absolute", top: 16, left: 16, right: 16, zIndex: 50,
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+      }}>
+        <button
+          onClick={() => setShowLeaderboard((v) => !v)}
+          style={{
+            background: "rgba(0,0,0,0.3)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: 10,
+            color: "white",
+            fontSize: 13,
+            fontWeight: "bold",
+            padding: "8px 14px",
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+            WebkitBackdropFilter: "blur(8px)",
+          }}
+        >
+          {showLeaderboard ? "\u2190 Back" : "\u{1F3C6} Leaderboard"}
+        </button>
+        {step !== "username" && (
+          <div style={{
+            background: "rgba(0,0,0,0.3)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: 10,
+            padding: "6px 12px",
+            color: "rgba(255,255,255,0.7)",
+            fontSize: 12,
+            backdropFilter: "blur(8px)",
+            WebkitBackdropFilter: "blur(8px)",
+          }}>
+            {username}
+          </div>
+        )}
+      </div>
 
       <div
         style={{
           textAlign: "center",
           color: "white",
-          maxWidth: "460px",
+          maxWidth: "480px",
+          width: "100%",
           padding: "20px",
+          position: "relative",
+          zIndex: 1,
         }}
       >
-        <h1
-          style={{
-            fontSize: "56px",
-            fontWeight: "900",
-            marginBottom: "8px",
-            letterSpacing: "-2px",
-          }}
-        >
-          Nimiq Racer
-        </h1>
-        <p
-          style={{
-            fontSize: "18px",
-            marginBottom: "20px",
-            opacity: 0.85,
-          }}
-        >
-          Race. Score. Repeat.
-        </p>
+        {/* Title section */}
+        <div style={{ marginBottom: 24, animation: "cardFadeIn 0.6s ease-out" }}>
+          {/* Decorative car icon */}
+          <div style={{
+            fontSize: 36, marginBottom: 8,
+            animation: "float 3s ease-in-out infinite",
+            filter: "drop-shadow(0 4px 12px rgba(34,204,136,0.3))",
+          }}>
+            {"\u{1F3CE}\uFE0F"}
+          </div>
+          <h1
+            style={{
+              fontSize: "clamp(36px, 10vw, 56px)",
+              fontWeight: "900",
+              marginBottom: "4px",
+              marginTop: 0,
+              letterSpacing: "-2px",
+              animation: "titleGlow 3s ease-in-out infinite",
+              background: "linear-gradient(135deg, #ffffff 0%, #22cc88 50%, #ffffff 100%)",
+              backgroundSize: "200% auto",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            Nimiq Racer
+          </h1>
+          <p
+            style={{
+              fontSize: "16px",
+              margin: 0,
+              opacity: 0.85,
+              animation: "subtitleSlide 0.8s ease-out",
+              letterSpacing: "3px",
+              textTransform: "uppercase",
+              fontWeight: 600,
+            }}
+          >
+            Race. Score. Repeat.
+          </p>
+        </div>
 
         {/* Challenge banner */}
         {challengeTarget && (
           <div
             style={{
-              background: "rgba(255,170,0,0.2)",
-              border: "1px solid rgba(255,170,0,0.5)",
-              borderRadius: 12,
-              padding: "10px 16px",
+              background: "linear-gradient(135deg, rgba(255,170,0,0.2), rgba(255,100,0,0.15))",
+              border: "1px solid rgba(255,170,0,0.4)",
+              borderRadius: 14,
+              padding: "14px 18px",
               marginBottom: 16,
-              fontSize: 14,
+              fontSize: 15,
               fontWeight: "bold",
               color: "#ffcc44",
+              animation: "cardFadeIn 0.5s ease-out",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
             }}
           >
-            Challenge: Beat {challengeTarget.creator_username}'s score of {challengeTarget.creator_score} pts!
+            {"\u{1F3AF}"} Beat {challengeTarget.creator_username}'s score of {challengeTarget.creator_score} pts!
           </div>
         )}
 
@@ -455,40 +570,47 @@ function GameWrapper() {
         {deviceId && !showLeaderboard && (step === "car_select" || step === "power_ups") && (
           <div
             style={{
-              background: "rgba(0,0,0,0.25)",
-              borderRadius: 12,
-              padding: "12px 16px",
-              marginBottom: 16,
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 14,
+              padding: "14px 18px",
+              marginBottom: 14,
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              animation: "cardFadeIn 0.5s ease-out 0.1s both",
+              border: "1px solid rgba(34,204,136,0.15)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
             }}
           >
             <div style={{ textAlign: "left" }}>
-              <div style={{ fontSize: 13, opacity: 0.7 }}>Daily Streak</div>
-              <div style={{ fontSize: 22, fontWeight: "bold" }}>
-                {streakCount} day{streakCount !== 1 ? "s" : ""}
+              <div style={{ fontSize: 11, opacity: 0.5, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Daily Streak</div>
+              <div style={{ fontSize: 24, fontWeight: "bold", lineHeight: 1 }}>
+                {streakCount}
+                <span style={{ fontSize: 13, opacity: 0.6, marginLeft: 4 }}>day{streakCount !== 1 ? "s" : ""}</span>
               </div>
-              {streakCount < 7 && <div style={{ fontSize: 10, opacity: 0.5 }}>7 days = Streak Racer car</div>}
-              {streakCount >= 7 && streakCount < 30 && <div style={{ fontSize: 10, opacity: 0.5 }}>30 days = Gold Racer car</div>}
+              {streakCount < 7 && <div style={{ fontSize: 10, opacity: 0.4, marginTop: 2 }}>7 days = Streak Racer car</div>}
+              {streakCount >= 7 && streakCount < 30 && <div style={{ fontSize: 10, opacity: 0.4, marginTop: 2 }}>30 days = Gold Racer car</div>}
             </div>
             <button
               onClick={handleStreakCheckin}
               disabled={streakCheckedIn || checkingIn || !isReady}
               style={{
-                padding: "8px 16px",
-                borderRadius: 8,
+                padding: "10px 18px",
+                borderRadius: 10,
                 border: "none",
                 background: streakCheckedIn
-                  ? "rgba(34,204,136,0.3)"
-                  : "linear-gradient(45deg, #22cc88, #44ddaa)",
-                color: streakCheckedIn ? "#22cc88" : "#1a1a2e",
+                  ? "rgba(34,204,136,0.2)"
+                  : "linear-gradient(135deg, #22cc88, #44ddaa)",
+                color: streakCheckedIn ? "#22cc88" : "#0d1b2a",
                 fontSize: 13,
                 fontWeight: "bold",
                 cursor: streakCheckedIn ? "default" : "pointer",
+                animation: !streakCheckedIn && !checkingIn ? "streakPulse 2s ease-in-out infinite" : "none",
+                transition: "all 0.2s",
               }}
             >
-              {streakCheckedIn ? "Checked In" : checkingIn ? "Signing..." : "Check In"}
+              {streakCheckedIn ? "\u2713 Done" : checkingIn ? "Signing..." : "Check In"}
             </button>
           </div>
         )}
@@ -497,15 +619,19 @@ function GameWrapper() {
         {achievements.length > 0 && !showLeaderboard && (step === "car_select" || step === "power_ups") && (
           <div
             style={{
-              background: "rgba(0,0,0,0.25)",
-              borderRadius: 12,
-              padding: "10px 16px",
-              marginBottom: 16,
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 14,
+              padding: "12px 18px",
+              marginBottom: 14,
               textAlign: "left",
+              animation: "cardFadeIn 0.5s ease-out 0.2s both",
+              border: "1px solid rgba(255,255,255,0.08)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
             }}
           >
-            <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 6 }}>Achievements</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Achievements</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {achievements.map((a) => {
                 const info = BADGE_INFO[a.badge];
                 if (!info) return null;
@@ -517,13 +643,14 @@ function GameWrapper() {
                       display: "inline-flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      width: 26,
-                      height: 26,
+                      width: 28,
+                      height: 28,
                       borderRadius: "50%",
-                      background: info.color,
+                      background: `linear-gradient(135deg, ${info.color}, ${info.color}cc)`,
                       color: "#000",
                       fontSize: 11,
                       fontWeight: "bold",
+                      boxShadow: `0 2px 8px ${info.color}44`,
                     }}
                   >
                     {info.icon}
@@ -535,23 +662,31 @@ function GameWrapper() {
         )}
 
         {showLeaderboard && (
-          <div style={{ marginBottom: "20px" }}>
+          <div style={{ marginBottom: 20, animation: "cardFadeIn 0.4s ease-out" }}>
             <Leaderboard limit={10} highlightUsername={username || undefined} />
           </div>
         )}
 
+        {/* ── Username step ── */}
         {!showLeaderboard && step === "username" && (
           <div
             style={{
-              background: "rgba(0,0,0,0.25)",
-              borderRadius: "16px",
-              padding: "28px",
-              marginBottom: "20px",
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 18,
+              padding: "32px 28px",
+              marginBottom: 20,
+              animation: "cardFadeIn 0.5s ease-out",
+              border: "1px solid rgba(255,255,255,0.08)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
             }}
           >
+            <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 14, textTransform: "uppercase", letterSpacing: 1 }}>
+              Enter your racer name
+            </div>
             <input
               type="text"
-              placeholder="Enter your username"
+              placeholder="Username"
               value={username}
               onChange={(e) => {
                 const v = e.target.value;
@@ -564,15 +699,21 @@ function GameWrapper() {
               style={{
                 width: "100%",
                 padding: "14px 18px",
-                borderRadius: "10px",
-                border: "2px solid rgba(255,255,255,0.3)",
-                background: "rgba(255,255,255,0.1)",
+                borderRadius: 12,
+                border: "2px solid rgba(34,204,136,0.3)",
+                background: "rgba(255,255,255,0.06)",
                 color: "white",
-                fontSize: "16px",
+                fontSize: 18,
+                fontWeight: "bold",
                 outline: "none",
                 boxSizing: "border-box",
-                marginBottom: "16px",
+                marginBottom: 16,
+                textAlign: "center",
+                letterSpacing: 1,
+                transition: "border-color 0.2s",
               }}
+              onFocus={(e) => e.currentTarget.style.borderColor = "rgba(34,204,136,0.6)"}
+              onBlur={(e) => e.currentTarget.style.borderColor = "rgba(34,204,136,0.3)"}
             />
 
             <button
@@ -580,70 +721,68 @@ function GameWrapper() {
               disabled={!username.trim()}
               style={{
                 width: "100%",
-                padding: "14px",
-                borderRadius: "10px",
+                padding: 15,
+                borderRadius: 12,
                 border: "none",
                 background: username.trim()
-                  ? "linear-gradient(45deg, #22cc88, #44ddaa)"
-                  : "#555",
-                color: username.trim() ? "#1a1a2e" : "#999",
-                fontSize: "17px",
+                  ? "linear-gradient(135deg, #22cc88, #44ddaa)"
+                  : "rgba(255,255,255,0.1)",
+                color: username.trim() ? "#0d1b2a" : "rgba(255,255,255,0.3)",
+                fontSize: 17,
                 fontWeight: "bold",
                 cursor: username.trim() ? "pointer" : "not-allowed",
-                transition: "all 0.2s ease",
-                marginBottom: "12px",
+                transition: "all 0.3s ease",
+                letterSpacing: 0.5,
               }}
             >
-              Next
+              Continue
             </button>
           </div>
         )}
 
+        {/* ── Car select step ── */}
         {!showLeaderboard && step === "car_select" && (
           <div
             style={{
-              background: "rgba(0,0,0,0.25)",
-              borderRadius: "16px",
-              padding: "28px",
-              marginBottom: "20px",
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 18,
+              padding: "24px 22px",
+              marginBottom: 20,
+              animation: "cardFadeIn 0.5s ease-out",
+              border: "1px solid rgba(255,255,255,0.08)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "20px",
-              }}
-            >
-              <h3 style={{ fontSize: "22px", fontWeight: "bold", margin: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+              <h3 style={{ fontSize: 18, fontWeight: "bold", margin: 0, letterSpacing: 0.5 }}>
                 Choose Your Ride
               </h3>
               <button
                 onClick={() => setStep("username")}
                 style={{
-                  background: "transparent",
-                  border: "1px solid rgba(255,255,255,0.25)",
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.12)",
                   borderRadius: 8,
-                  color: "rgba(255,255,255,0.6)",
-                  fontSize: 12,
+                  color: "rgba(255,255,255,0.5)",
+                  fontSize: 11,
                   padding: "4px 10px",
                   cursor: "pointer",
                 }}
               >
-                {username}
+                Change Name
               </button>
             </div>
 
             {purchaseError && (
               <div
                 style={{
-                  background: "rgba(255,68,68,0.25)",
-                  border: "1px solid rgba(255,68,68,0.5)",
-                  borderRadius: "10px",
+                  background: "rgba(255,68,68,0.15)",
+                  border: "1px solid rgba(255,68,68,0.3)",
+                  borderRadius: 10,
                   padding: "10px 14px",
-                  marginBottom: "16px",
-                  fontSize: "13px",
+                  marginBottom: 14,
+                  fontSize: 13,
                   color: "#ff8888",
                 }}
               >
@@ -655,8 +794,8 @@ function GameWrapper() {
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(3, 1fr)",
-                gap: "12px",
-                marginBottom: "24px",
+                gap: 10,
+                marginBottom: 20,
               }}
             >
               {CAR_OPTIONS.map((car, i) => {
@@ -670,66 +809,71 @@ function GameWrapper() {
                     onClick={() => available ? setSelectedCar(i) : handleCarClick(i)}
                     disabled={purchasing || loadingPurchases || (isStreakCar && !available)}
                     style={{
-                      padding: "12px 6px",
-                      borderRadius: "12px",
+                      padding: "10px 4px 8px",
+                      borderRadius: 12,
                       border: isSelected
-                        ? "3px solid #22cc88"
-                        : "2px solid rgba(255,255,255,0.2)",
+                        ? "2px solid #22cc88"
+                        : "1px solid rgba(255,255,255,0.1)",
                       background: isSelected
-                        ? "rgba(34,204,136,0.15)"
-                        : "rgba(255,255,255,0.05)",
+                        ? "rgba(34,204,136,0.12)"
+                        : "rgba(255,255,255,0.03)",
                       cursor: purchasing || loadingPurchases || (isStreakCar && !available) ? "default" : "pointer",
                       transition: "all 0.2s ease",
                       display: "flex",
                       flexDirection: "column" as const,
                       alignItems: "center",
-                      gap: "4px",
-                      opacity: (purchasing || loadingPurchases) ? 0.6 : (!available ? 0.5 : 1),
+                      gap: 3,
+                      opacity: (purchasing || loadingPurchases) ? 0.5 : (!available ? 0.4 : 1),
                       position: "relative" as const,
+                      boxShadow: isSelected ? `0 0 20px ${car.hex}33` : "none",
                     }}
                   >
+                    {/* Car color swatch */}
                     <div
                       style={{
-                        width: "50px",
-                        height: "30px",
-                        borderRadius: "6px",
-                        background: available ? car.hex : `${car.hex}55`,
-                        boxShadow: isSelected ? `0 0 16px ${car.hex}88` : "none",
+                        width: 48,
+                        height: 28,
+                        borderRadius: 6,
+                        background: available
+                          ? `linear-gradient(135deg, ${car.hex}, ${car.hex}cc)`
+                          : `${car.hex}44`,
+                        boxShadow: isSelected ? `0 4px 12px ${car.hex}55` : "none",
+                        transition: "all 0.2s",
                       }}
                     />
                     <span
                       style={{
                         color: "white",
-                        fontSize: "10px",
-                        fontWeight: isSelected ? "bold" : "normal",
-                        opacity: available ? (isSelected ? 1 : 0.7) : 0.5,
+                        fontSize: 9,
+                        fontWeight: isSelected ? "bold" : 500,
+                        opacity: available ? 0.8 : 0.5,
                       }}
                     >
                       {car.name}
                     </span>
                     {/* Stat bars */}
                     {(car.speedBonus > 0 || car.handlingBonus > 0 || car.durabilityBonus > 0) && (
-                      <div style={{ width: "100%" }}>
+                      <div style={{ width: "100%", padding: "0 2px" }}>
                         {car.speedBonus > 0 && <StatBar label="SPD" value={car.speedBonus} max={0.1} color="#ff4444" />}
                         {car.handlingBonus > 0 && <StatBar label="HND" value={car.handlingBonus} max={2} color="#44aaff" />}
                         {car.durabilityBonus > 0 && <StatBar label="DUR" value={car.durabilityBonus} max={1} color="#22cc88" />}
                       </div>
                     )}
                     {car.premium && available && (
-                      <span style={{ fontSize: "9px", color: "#22cc88", fontWeight: "bold" }}>Owned</span>
+                      <span style={{ fontSize: 8, color: "#22cc88", fontWeight: "bold" }}>OWNED</span>
                     )}
                     {car.premium && !available && (
-                      <span style={{ fontSize: "9px", color: "#ffd700", fontWeight: "bold" }}>
+                      <span style={{ fontSize: 8, color: "#ffd700", fontWeight: "bold" }}>
                         {formatNim(car.priceLuna)}
                       </span>
                     )}
                     {isStreakCar && !available && (
-                      <span style={{ fontSize: "9px", color: "#ff8844", fontWeight: "bold" }}>
+                      <span style={{ fontSize: 8, color: "#ff8844", fontWeight: "bold" }}>
                         {streakRequired}-day streak
                       </span>
                     )}
                     {isStreakCar && available && (
-                      <span style={{ fontSize: "9px", color: "#22cc88", fontWeight: "bold" }}>Unlocked</span>
+                      <span style={{ fontSize: 8, color: "#22cc88", fontWeight: "bold" }}>UNLOCKED</span>
                     )}
                   </button>
                 );
@@ -739,7 +883,6 @@ function GameWrapper() {
             <button
               onClick={() => {
                 if (isCarAvailable(CAR_OPTIONS[selectedCar], selectedCar)) {
-                  // Skip power-up step if not in Nimiq Pay
                   if (isReady && deviceId) {
                     setStep("power_ups");
                   } else {
@@ -750,57 +893,60 @@ function GameWrapper() {
               disabled={!isCarAvailable(CAR_OPTIONS[selectedCar], selectedCar)}
               style={{
                 width: "100%",
-                padding: "14px",
-                borderRadius: "10px",
+                padding: 15,
+                borderRadius: 12,
                 border: "none",
                 background: isCarAvailable(CAR_OPTIONS[selectedCar], selectedCar)
-                  ? "linear-gradient(45deg, #22cc88, #44ddaa)"
-                  : "#555",
-                color: isCarAvailable(CAR_OPTIONS[selectedCar], selectedCar) ? "#1a1a2e" : "#999",
-                fontSize: "17px",
+                  ? "linear-gradient(135deg, #22cc88, #44ddaa)"
+                  : "rgba(255,255,255,0.1)",
+                color: isCarAvailable(CAR_OPTIONS[selectedCar], selectedCar) ? "#0d1b2a" : "rgba(255,255,255,0.3)",
+                fontSize: 17,
                 fontWeight: "bold",
                 cursor: isCarAvailable(CAR_OPTIONS[selectedCar], selectedCar) ? "pointer" : "not-allowed",
-                transition: "all 0.2s ease",
-                marginBottom: "12px",
+                transition: "all 0.3s ease",
               }}
             >
-              {isReady && deviceId ? "Next: Power-Ups" : "Start Racing"}
+              {isReady && deviceId ? "Next: Power-Ups \u2192" : "Start Racing \u2192"}
             </button>
           </div>
         )}
 
-        {/* Power-ups selection step */}
+        {/* ── Power-ups step ── */}
         {!showLeaderboard && step === "power_ups" && (
           <div
             style={{
-              background: "rgba(0,0,0,0.25)",
-              borderRadius: "16px",
-              padding: "28px",
-              marginBottom: "20px",
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 18,
+              padding: "24px 22px",
+              marginBottom: 20,
+              animation: "cardFadeIn 0.5s ease-out",
+              border: "1px solid rgba(255,255,255,0.08)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ fontSize: "20px", fontWeight: "bold", margin: 0 }}>Power-Ups</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <h3 style={{ fontSize: 18, fontWeight: "bold", margin: 0 }}>Power-Ups</h3>
               <button
                 onClick={() => setStep("car_select")}
                 style={{
-                  background: "transparent",
-                  border: "1px solid rgba(255,255,255,0.25)",
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.12)",
                   borderRadius: 8,
-                  color: "rgba(255,255,255,0.6)",
-                  fontSize: 12,
+                  color: "rgba(255,255,255,0.5)",
+                  fontSize: 11,
                   padding: "4px 10px",
                   cursor: "pointer",
                 }}
               >
-                Back
+                \u2190 Back
               </button>
             </div>
-            <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 16, marginTop: 0 }}>
+            <p style={{ fontSize: 12, opacity: 0.4, marginBottom: 14, marginTop: 4 }}>
               Buy single-use boosts with NIM. Each lasts one race.
             </p>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
               {POWER_UPS.map((pu) => {
                 const owned = selectedPowerUps.has(pu.id);
                 const buying = buyingPowerUp === pu.id;
@@ -810,23 +956,25 @@ function GameWrapper() {
                     onClick={() => handlePowerUpBuy(pu)}
                     disabled={buying}
                     style={{
-                      padding: "12px 10px",
-                      borderRadius: 10,
-                      border: owned ? `2px solid ${pu.color}` : "2px solid rgba(255,255,255,0.15)",
-                      background: owned ? `${pu.color}22` : "rgba(255,255,255,0.05)",
+                      padding: "14px 12px",
+                      borderRadius: 12,
+                      border: owned ? `2px solid ${pu.color}` : "1px solid rgba(255,255,255,0.1)",
+                      background: owned ? `${pu.color}15` : "rgba(255,255,255,0.03)",
                       cursor: buying ? "wait" : "pointer",
                       textAlign: "left",
                       transition: "all 0.2s",
+                      boxShadow: owned ? `0 0 16px ${pu.color}22` : "none",
                     }}
                   >
-                    <div style={{ fontSize: 13, fontWeight: "bold", color: pu.color, marginBottom: 4 }}>
-                      {pu.name}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                      <span style={{ fontSize: 16 }}>{pu.icon}</span>
+                      <span style={{ fontSize: 13, fontWeight: "bold", color: pu.color }}>{pu.name}</span>
                     </div>
-                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", marginBottom: 6 }}>
+                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginBottom: 6, lineHeight: 1.3 }}>
                       {pu.description}
                     </div>
                     <div style={{ fontSize: 11, fontWeight: "bold", color: owned ? "#22cc88" : "#ffd700" }}>
-                      {owned ? "Selected" : buying ? "Paying..." : formatNim(pu.priceLuna)}
+                      {owned ? "\u2713 Selected" : buying ? "Paying..." : formatNim(pu.priceLuna)}
                     </div>
                   </button>
                 );
@@ -837,29 +985,29 @@ function GameWrapper() {
               onClick={() => setStep("playing")}
               style={{
                 width: "100%",
-                padding: "14px",
-                borderRadius: "10px",
+                padding: 15,
+                borderRadius: 12,
                 border: "none",
-                background: "linear-gradient(45deg, #22cc88, #44ddaa)",
-                color: "#1a1a2e",
-                fontSize: "17px",
+                background: "linear-gradient(135deg, #22cc88, #44ddaa)",
+                color: "#0d1b2a",
+                fontSize: 17,
                 fontWeight: "bold",
                 cursor: "pointer",
-                transition: "all 0.2s ease",
-                marginBottom: "12px",
+                transition: "all 0.3s ease",
               }}
             >
               {selectedPowerUps.size > 0
-                ? `Start Racing (${selectedPowerUps.size} power-up${selectedPowerUps.size > 1 ? "s" : ""})`
-                : "Start Racing (no power-ups)"}
+                ? `Start Racing (${selectedPowerUps.size} boost${selectedPowerUps.size > 1 ? "s" : ""}) \u2192`
+                : "Start Racing \u2192"}
             </button>
           </div>
         )}
 
-        <p style={{ fontSize: "13px", opacity: 0.5 }}>
-          Desktop: Arrow keys to steer. Mobile: Swipe or tilt your phone to steer.
-          <br />
-          Avoid obstacles. Collect coins. You have 3 lives per run!
+        {/* Controls hint */}
+        <p style={{ fontSize: 12, opacity: 0.35, marginTop: 8, lineHeight: 1.6 }}>
+          {"ontouchstart" in window
+            ? "Swipe or tilt to steer \u00b7 Collect coins \u00b7 3 lives per run"
+            : "Arrow keys to steer \u00b7 Collect coins \u00b7 3 lives per run"}
         </p>
       </div>
     </div>
