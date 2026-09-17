@@ -663,7 +663,7 @@ function GameWrapper() {
 
         {showLeaderboard && (
           <div style={{ marginBottom: 20, animation: "cardFadeIn 0.4s ease-out" }}>
-            <Leaderboard limit={10} highlightUsername={username || undefined} />
+            <Leaderboard limit={100} highlightUsername={username || undefined} />
           </div>
         )}
 
