@@ -191,6 +191,8 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
 
   const pausedRef = useRef(false);
   const touchStartRef = useRef<{ x: number; y: number; id: number } | null>(null);
+  // Hold-touch for continuous speed control: "accel" | "brake" | null
+  const touchHoldRef = useRef<{ id: number; zone: "accel" | "brake" } | null>(null);
   const [tiltEnabled, setTiltEnabled] = useState(false);
   const tiltEnabledRef = useRef(false);
   const tiltBaselineRef = useRef<number | null>(null); // baseline gamma when tilt is activated
@@ -839,6 +841,9 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
       setGameRunning(false);
       gameRunningRef.current = false;
       setGameOver(true);
+      // Release any held touch/key state
+      keysRef.current = { left: false, right: false, up: false, down: false };
+      touchHoldRef.current = null;
 
       gameStatsRef.current.lapTime =
         (Date.now() - gs.gameStartTime) / 1000;
@@ -1016,11 +1021,14 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     }
 
     // ── Speed ──
+    // Gentle ramp: +0.005/frame accel (reaches max in ~80 frames ≈ 1.3s from 0.7),
+    // -0.012/frame brake (slows noticeably but not jarring).
+    // Mobile hold uses the same keysRef flags as keyboard.
     if (keysRef.current.up) {
-      gs.speedMultiplier = Math.min(gs.maxSpeed, gs.speedMultiplier + 0.008);
+      gs.speedMultiplier = Math.min(gs.maxSpeed, gs.speedMultiplier + 0.005);
     }
     if (keysRef.current.down) {
-      gs.speedMultiplier = Math.max(0.3, gs.speedMultiplier - 0.02);
+      gs.speedMultiplier = Math.max(0.3, gs.speedMultiplier - 0.012);
     }
     const frameSpeed = gs.baseGameSpeed * gs.speedMultiplier; // units/frame factor
     const moveZ = frameSpeed * 30; // actual z-units the car moves this frame
@@ -1459,6 +1467,9 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
         animationIdRef.current = 0;
         if (waitTimeoutRef.current) { clearTimeout(waitTimeoutRef.current); waitTimeoutRef.current = null; }
         gameRunningRef.current = false;
+        // Release any held touch/key state so speed doesn't stick
+        keysRef.current = { left: false, right: false, up: false, down: false };
+        touchHoldRef.current = null;
         audioRef.current?.mute();
       } else {
         pausedRef.current = false;
@@ -2016,6 +2027,13 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
       return false;
     };
 
+    // ── Touch: hold bottom-half for speed, swipe anywhere for lanes ──
+    // Bottom 40% of the screen is the speed zone:
+    //   - Hold right side = accelerate
+    //   - Hold left side = brake
+    // Swipe anywhere (horizontal) = lane change
+    const SPEED_ZONE_RATIO = 0.60; // top 60% boundary — below this is the speed zone
+
     const handleTouchStart = (e: TouchEvent) => {
       // Let buttons/interactive elements handle their own events
       if (isInteractiveElement(e.target)) return;
@@ -2023,9 +2041,40 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
       e.preventDefault();
       const touch = e.changedTouches[0];
       touchStartRef.current = { x: touch.clientX, y: touch.clientY, id: touch.identifier };
+
+      // If touch is in the bottom 40% of the screen, start hold-to-speed
+      if (gameRunningRef.current) {
+        const screenH = window.innerHeight;
+        const screenW = window.innerWidth;
+        if (touch.clientY > screenH * SPEED_ZONE_RATIO) {
+          const zone = touch.clientX > screenW / 2 ? "accel" : "brake";
+          touchHoldRef.current = { id: touch.identifier, zone };
+          if (zone === "accel") {
+            keysRef.current.up = true;
+          } else {
+            keysRef.current.down = true;
+          }
+        }
+      }
     };
     const handleTouchEnd = (e: TouchEvent) => {
       if (isInteractiveElement(e.target)) return;
+
+      // Release hold-to-speed if this touch was the hold touch
+      if (touchHoldRef.current) {
+        const released = Array.from(e.changedTouches).find(
+          (t) => t.identifier === touchHoldRef.current!.id
+        );
+        if (released) {
+          if (touchHoldRef.current.zone === "accel") {
+            keysRef.current.up = false;
+          } else {
+            keysRef.current.down = false;
+          }
+          touchHoldRef.current = null;
+        }
+      }
+
       if (!touchStartRef.current) return;
       e.preventDefault();
       const touch = Array.from(e.changedTouches).find(
@@ -2042,25 +2091,15 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
 
       if (!gameRunningRef.current) return; // ignore swipes while paused/game over
 
+      // Horizontal swipe — lane change (works from anywhere on screen)
       if (Math.abs(dx) > Math.abs(dy)) {
-        // Horizontal swipe — lane change
         if (dx > 0) {
           carLaneRef.current = Math.min(LANE_COUNT - 1, carLaneRef.current + 1);
         } else {
           carLaneRef.current = Math.max(0, carLaneRef.current - 1);
         }
         audioRef.current?.playLaneChange();
-      } else {
-        // Vertical swipe — speed
-        if (dy < 0) {
-          // Swipe up → speed up
-          keysRef.current.up = true;
-          setTimeout(() => { keysRef.current.up = false; }, 200);
-        } else {
-          // Swipe down → slow down
-          keysRef.current.down = true;
-          setTimeout(() => { keysRef.current.down = false; }, 200);
-        }
+        vibrate(10);
       }
     };
     const handleTouchMove = (e: TouchEvent) => {
@@ -2712,6 +2751,36 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
             </div>
           )}
 
+          {/* Mobile speed zone labels (only show on touch devices) */}
+          {"ontouchstart" in window && (
+            <>
+              <div style={{
+                position: "absolute",
+                bottom: 40,
+                left: 16,
+                color: "rgba(255,255,255,0.25)",
+                fontSize: 11,
+                fontWeight: "bold",
+                letterSpacing: 1,
+                pointerEvents: "none",
+              }}>
+                BRAKE
+              </div>
+              <div style={{
+                position: "absolute",
+                bottom: 40,
+                right: 16,
+                color: "rgba(255,255,255,0.25)",
+                fontSize: 11,
+                fontWeight: "bold",
+                letterSpacing: 1,
+                pointerEvents: "none",
+              }}>
+                GAS
+              </div>
+            </>
+          )}
+
           {/* Lane indicators (subtle) */}
           <div
             style={{
@@ -2867,8 +2936,8 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
             {"ontouchstart" in window ? (
               <div style={{ textAlign: "left", fontSize: 14, lineHeight: 1.8 }}>
                 <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>Swipe Left/Right</span> — Change lanes</div>
-                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>Swipe Up</span> — Speed up</div>
-                <div><span style={{ color: "#44aaff", fontWeight: "bold" }}>Swipe Down</span> — Brake</div>
+                <div><span style={{ color: "#ff8844", fontWeight: "bold" }}>Hold bottom-right</span> — Accelerate</div>
+                <div><span style={{ color: "#ff8844", fontWeight: "bold" }}>Hold bottom-left</span> — Brake</div>
                 <div style={{ marginTop: 8 }}><span style={{ color: "#22cc88", fontWeight: "bold" }}>Tilt</span> — Enable tilt steering (top right)</div>
               </div>
             ) : (
