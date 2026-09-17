@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "crypto";
+import { timingSafeEqual, verify, createPublicKey, randomUUID } from "crypto";
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
@@ -200,6 +200,22 @@ export function createApp() {
           } catch (err) {
             // UNIQUE constraint = already earned
             if (!err?.message?.includes("UNIQUE constraint")) throw err;
+          }
+        }
+      }
+
+      // ── Mark used power-ups as consumed ──
+      if (deviceId && powerUps.length > 0) {
+        for (const pu of powerUps) {
+          try {
+            await db.execute({
+              sql: `UPDATE power_up_purchases SET used = 1
+                    WHERE device_id = ? AND power_up = ? AND used = 0
+                    ORDER BY created_at ASC LIMIT 1`,
+              args: [deviceId, pu],
+            });
+          } catch {
+            // Non-critical — don't fail the session submission
           }
         }
       }
@@ -460,7 +476,7 @@ export function createApp() {
       const score = num(b.score, { field: "score", min: 0, max: 200_000, integer: true });
       const deviceId = str(b.deviceId, { field: "deviceId", maxLen: 128, required: false }) || null;
 
-      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      const id = randomUUID();
 
       await db.execute({
         sql: `INSERT INTO challenges (id, creator_username, creator_score, creator_device_id) VALUES (?, ?, ?, ?)`,
@@ -524,6 +540,31 @@ export function createApp() {
       const dayDate = parts[2];
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dayDate)) {
         throw new ValidationError("invalid date format in message");
+      }
+
+      // Verify Ed25519 signature — reject forged check-ins
+      try {
+        const pubKeyBytes = Buffer.from(publicKey, "hex");
+        if (pubKeyBytes.length !== 32) throw new ValidationError("invalid public key length");
+        const sigBytes = Buffer.from(signature, "hex");
+        if (sigBytes.length !== 64) throw new ValidationError("invalid signature length");
+        const msgBytes = Buffer.from(message, "utf8");
+
+        const keyObj = createPublicKey({
+          key: Buffer.concat([
+            // Ed25519 DER prefix for a 32-byte public key
+            Buffer.from("302a300506032b6570032100", "hex"),
+            pubKeyBytes,
+          ]),
+          format: "der",
+          type: "spki",
+        });
+
+        const valid = verify(null, msgBytes, keyObj, sigBytes);
+        if (!valid) throw new ValidationError("signature verification failed");
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        throw new ValidationError("signature verification failed");
       }
 
       // Calculate streak: check if yesterday exists

@@ -13,6 +13,8 @@ import { createElement } from "react";
 // (the shop just won't function).
 // ---------------------------------------------------------------------------
 
+// The SDK's NimiqProvider type varies across versions; we only use a few methods.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let nimiqProvider: any = null;
 let sdkReady = false;
 
@@ -76,9 +78,9 @@ export async function sendNimPayment({
     // If we got here, the transaction was accepted by Nimiq Pay. It may still be
     // pending confirmation, but the user has approved and signed it — treat as success.
     return { success: true, txHash: typeof result === "string" ? result : undefined };
-  } catch (err: any) {
+  } catch (err: unknown) {
     // User cancelled or SDK error
-    const msg = err?.message || String(err) || "Transaction failed";
+    const msg = (err instanceof Error ? err.message : String(err)) || "Transaction failed";
     return { success: false, error: msg };
   }
 }

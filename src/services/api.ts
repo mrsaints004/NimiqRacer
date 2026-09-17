@@ -10,6 +10,7 @@ export interface SessionPayload {
   durationSeconds: number;
   carColor?: string;
   deviceId?: string;
+  powerUps?: string[];
 }
 
 export interface SessionResult {
@@ -18,6 +19,7 @@ export interface SessionResult {
   isPersonalBest: boolean;
   totalPlayers: number;
   verified: boolean;
+  newBadges?: string[];
 }
 
 export interface LeaderboardEntry {
@@ -26,6 +28,7 @@ export interface LeaderboardEntry {
   games: number;
   last_played: string;
   verified: boolean;
+  badge_count: number;
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
@@ -189,12 +192,6 @@ export async function fetchAchievements(deviceId: string): Promise<Achievement[]
   if (!res.ok) return [];
   const data = await res.json();
   return data.achievements as Achievement[];
-}
-
-// ── Session result extended ──
-
-export interface SessionResultExtended extends SessionResult {
-  newBadges?: string[];
 }
 
 export async function fetchStatsSummary(adminSecret?: string): Promise<StatsSummary> {

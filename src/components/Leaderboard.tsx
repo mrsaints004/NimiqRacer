@@ -117,9 +117,9 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                       &#10003;
                     </span>
                   )}
-                  {(entry as any).badge_count > 0 && (
+                  {entry.badge_count > 0 && (
                     <span
-                      title={`${(entry as any).badge_count} badges`}
+                      title={`${entry.badge_count} badges`}
                       style={{
                         fontSize: 9,
                         fontWeight: "bold",
@@ -133,7 +133,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                         justifyContent: "center",
                       }}
                     >
-                      {(entry as any).badge_count}
+                      {entry.badge_count}
                     </span>
                   )}
                 </span>

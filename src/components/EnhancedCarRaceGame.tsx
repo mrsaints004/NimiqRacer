@@ -176,6 +176,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
   const [newBadges, setNewBadges] = useState<string[]>([]);
   const [challengeResult, setChallengeResult] = useState<"won" | "lost" | null>(null);
   const [challengeUrl, setChallengeUrl] = useState<string | null>(null);
+  const [submitFailed, setSubmitFailed] = useState(false);
 
   // Power-up state refs
   const shieldActiveRef = useRef(activePowerUps.has("shield"));
@@ -289,7 +290,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
   // ── Request gyroscope permission (iOS 13+ requires explicit permission) ──
   const requestTiltPermission = useCallback(async () => {
     // Check if DeviceOrientationEvent permission API exists (iOS 13+)
-    const DOE = DeviceOrientationEvent as any;
+    const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
     if (typeof DOE.requestPermission === "function") {
       try {
         const permission = await DOE.requestPermission();
@@ -777,7 +778,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     box.castShadow = true;
     group.add(box);
 
-    (group as any).userData = { bobPhase: Math.random() * Math.PI * 2 };
+    group.userData = { bobPhase: Math.random() * Math.PI * 2 };
 
     // Pick a random lane
     const lane = LANE_CENTERS[Math.floor(Math.random() * LANE_COUNT)];
@@ -803,7 +804,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     shaft.castShadow = true;
     group.add(shaft);
 
-    (group as any).userData = {
+    group.userData = {
       rotationSpeed: 0.06,
       bobPhase: Math.random() * Math.PI * 2,
     };
@@ -858,6 +859,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
 
       setSessionResult(null);
       setNewBadges([]);
+      setSubmitFailed(false);
       submitSession({
         username,
         score: gameStatsRef.current.finalScore,
@@ -869,14 +871,14 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
         carColor: toHexColor(selectedCarColor),
         deviceId: deviceId || undefined,
         powerUps: Array.from(activePowerUps),
-      } as any)
+      })
         .then((result) => {
           setSessionResult(result);
-          if ((result as any).newBadges?.length > 0) {
-            setNewBadges((result as any).newBadges);
+          if (result.newBadges && result.newBadges.length > 0) {
+            setNewBadges(result.newBadges);
           }
         })
-        .catch(() => {});
+        .catch(() => { setSubmitFailed(true); });
     } else {
       // Respawn with brief invincibility blinking
       audioRef.current?.playRespawn();
@@ -937,7 +939,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     // Red flash overlay
     setCrashFlash(true);
     setTimeout(() => setCrashFlash(false), 400);
-  }, [gameOver, disposeObject]);
+  }, [gameOver, disposeObject, spawnParticles]);
 
   // ─────────────────────────────────────────────────────────
   // ANIMATION LOOP
@@ -1269,7 +1271,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
 
     // ── Bonus box animation ──
     bonusBoxesRef.current.forEach((box) => {
-      const ud = (box as any).userData;
+      const ud = box.userData as { bobPhase?: number };
       if (ud?.bobPhase !== undefined && box.children[0]) {
         box.children[0].position.y =
           1.2 + Math.sin(time * 3 + ud.bobPhase) * 0.25;
@@ -1279,7 +1281,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
 
     // ── Golden key animation ──
     goldenKeysRef.current.forEach((key) => {
-      const ud = (key as any).userData;
+      const ud = key.userData as { rotationSpeed: number; bobPhase?: number };
       key.rotation.y += ud.rotationSpeed;
       if (ud.bobPhase !== undefined) {
         const bob = Math.sin(time * 4 + ud.bobPhase) * 0.25;
@@ -1350,12 +1352,15 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     for (let i = bonusBoxesRef.current.length - 1; i >= 0; i--) {
       const box = bonusBoxesRef.current[i];
       if (box.position.z > 8) {
+        disposeObject(box);
         scene.remove(box);
         bonusBoxesRef.current.splice(i, 1);
       } else if (
         Math.abs(box.position.z - car.position.z) < 2.0 &&
         Math.abs(box.position.x - car.position.x) < 1.5
       ) {
+        const pos = box.position.clone();
+        disposeObject(box);
         scene.remove(box);
         bonusBoxesRef.current.splice(i, 1);
         gs.currentScore += 30;
@@ -1363,7 +1368,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
         gameStatsRef.current.bonusBoxesCollected++;
         audioRef.current?.playBonusCollect();
         vibrate([30, 20, 30]); // bonus haptic
-        spawnParticles(box.position.clone(), 0x22cc44, 20, 0.06, 600);
+        spawnParticles(pos, 0x22cc44, 20, 0.06, 600);
         showPopup("+30 BONUS!");
       }
     }
@@ -1372,12 +1377,14 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     for (let i = goldenKeysRef.current.length - 1; i >= 0; i--) {
       const key = goldenKeysRef.current[i];
       if (key.position.z > 8) {
+        disposeObject(key);
         scene.remove(key);
         goldenKeysRef.current.splice(i, 1);
       } else if (
         Math.abs(key.position.z - car.position.z) < 2.0 &&
         Math.abs(key.position.x - car.position.x) < 1.5
       ) {
+        disposeObject(key);
         scene.remove(key);
         goldenKeysRef.current.splice(i, 1);
         audioRef.current?.playKeyCollect();
@@ -1429,6 +1436,8 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     loseLife,
     finishCrash,
     spawnParticles,
+    disposeObject,
+    carStats.handlingBonus,
   ]);
 
   // ── Pause / Resume ──
@@ -1900,6 +1909,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     setNewBadges([]);
     setChallengeResult(null);
     setChallengeUrl(null);
+    setSubmitFailed(false);
 
     lastFrameTimeRef.current = 0;
     setGameRunning(true);
@@ -1912,6 +1922,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
       }
     }, 50);
     logEvent("game_start", username, { carColor: toHexColor(selectedCarColor) });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- showTutorial is read once on first init; re-running initializeGame when it changes would destroy and recreate the entire 3D scene
   }, [animate, buildRoadSegment, username, selectedCarColor, activePowerUps, carStats]);
 
   // ─────────────────────────────────────────────────────────
@@ -2180,6 +2191,8 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
   }, []);
 
   useEffect(() => {
+    const mountEl = mountRef.current;
+    const roadEventObjects = roadEventObjectsRef.current;
     return () => {
       // Stop the game loop immediately
       gameRunningRef.current = false;
@@ -2206,7 +2219,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
       bonusBoxesRef.current = [];
       goldenKeysRef.current = [];
       coinStreakRef.current = [];
-      roadEventObjectsRef.current.clear();
+      roadEventObjects.clear();
       speedBoostZonesRef.current = [];
       roadSegsRef.current = [];
       buildingGroupsRef.current = [];
@@ -2220,10 +2233,10 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
       }
       if (rendererRef.current) {
         try {
-          if (mountRef.current?.contains(rendererRef.current.domElement))
-            mountRef.current.removeChild(rendererRef.current.domElement);
+          if (mountEl?.contains(rendererRef.current.domElement))
+            mountEl.removeChild(rendererRef.current.domElement);
           rendererRef.current.dispose();
-        } catch (_) {
+        } catch {
           /* cleanup */
         }
         rendererRef.current = null;
@@ -2293,7 +2306,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
         if (mountRef.current?.contains(rendererRef.current.domElement))
           mountRef.current.removeChild(rendererRef.current.domElement);
         rendererRef.current.dispose();
-      } catch (_) {
+      } catch {
         /* */
       }
       rendererRef.current = null;
@@ -2323,6 +2336,7 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
     setNewBadges([]);
     setChallengeResult(null);
     setChallengeUrl(null);
+    setSubmitFailed(false);
     setTimeout(() => initializeGame(), 100);
   }, [initializeGame, disposeObject]);
 
@@ -3090,6 +3104,19 @@ const EnhancedCarRaceGame: React.FC<EnhancedCarRaceGameProps> = ({
                 Global rank #{sessionResult.rank} of {sessionResult.totalPlayers}{" "}
                 {sessionResult.totalPlayers === 1 ? "player" : "players"}
                 {sessionResult.isPersonalBest && " \u00b7 Personal best!"}
+              </div>
+            )}
+
+            {submitFailed && !sessionResult && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#ff6644",
+                  marginBottom: 12,
+                  opacity: 0.8,
+                }}
+              >
+                Could not save score to leaderboard. Check your connection.
               </div>
             )}
 
