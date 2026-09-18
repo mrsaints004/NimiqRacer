@@ -1,184 +1,123 @@
 # Nimiq Racer
 
-A lightweight 3D racing game built with React, Three.js, and TypeScript. Designed for smooth 60fps gameplay on both desktop and mobile, with Nimiq Pay Mini App integration for in-game purchases.
+A 3D endless racing game that runs inside Nimiq Pay. Built on the Mini Apps Framework using `@nimiq/mini-app-sdk`. Works on desktop and mobile at 60fps.
 
-## Gameplay
+**Live:** [nimiqracer.vercel.app](https://nimiqracer.vercel.app)
 
-Race down an endless highway, dodging obstacles and collecting bonuses to rack up points.
+## What it does
 
-- **3-lane system** — switch lanes to avoid traffic cones, barriers, and stalled cars
-- **Bonus boxes** (green) — collect for +30 points
-- **Golden keys** — temporary invisibility power-up
-- **Coin streaks** — ride through coin lanes for +10 each
-- **Speed boost pads** — hit cyan pads for a temporary speed surge
-- **Construction zones** — narrowed road sections to test precision
-- **Overpasses** — scenic concrete bridges overhead
-- Speed increases gradually as you survive longer
-- **Cosmetic shop** — unlock premium car skins by paying NIM
-- **Global leaderboard** — every run is submitted to the backend; see your rank on the game-over screen or browse the top 10 from the main menu
+You race down a highway, dodge obstacles, collect coins, and try to survive as long as possible. The game gets faster the longer you last.
 
-## Controls
+### Core gameplay
 
-| Input | Action |
-|-------|--------|
-| Arrow Left/Right or A/D | Switch lanes |
-| Arrow Up/Down or W/S | Speed up / slow down |
-| Mouse movement | Steer between lanes |
-| Mobile tap (left/right) | Switch lanes |
+- 3-lane highway with lane switching
+- Obstacles: traffic cones, barriers, stalled cars
+- Collectibles: coins (+10 pts), bonus boxes (+30 pts), golden keys (invisibility)
+- Road events: speed boost pads, construction zones, overpasses, coin streak lanes
+- 3 lives per run with crash freeze, camera shake, and respawn invincibility
+- Difficulty ramps up over time (speed and obstacle frequency)
 
-## Quick Start
+### Nimiq Pay integration
+
+The game uses four SDK features:
+
+1. **NIM payments** — 5 premium cars purchasable with NIM (1-2 NIM each). 3 cars are free.
+2. **Device identity** — per-origin device ID for verified leaderboard entries (checkmark badge) and purchase tracking.
+3. **Message signing** — Ed25519 signatures for daily streak check-ins, verified server-side.
+4. **Graceful degradation** — everything except the shop and verification works in any browser. No Nimiq Pay required to play.
+
+### Progression systems
+
+- **Global leaderboard** — all players ranked by best score, scrollable, with medals for top 3.
+- **Daily streaks** — check in daily (signed with your Nimiq key). 7-day streak unlocks the Streak Racer car. 30-day streak unlocks the Gold Racer.
+- **Achievements** — 7 badges: Rookie, Road Warrior, Speed Demon, Coin Hunter, Dodger, Veteran, Endurance. Earned automatically and shown on game over.
+- **Challenges** — after a run, generate a shareable link. Your friend opens it, plays, and the scores are compared. Uses the Web Share API on mobile.
+- **Power-ups** — purchasable single-use boosts: Extra Life, Coin Magnet (2x coin radius for 30s), Head Start (+150 pts), Shield (absorbs first crash). Consumed after use.
+
+### Controls
+
+Desktop:
+- A/D or Left/Right arrows — switch lanes
+- W/S or Up/Down arrows — accelerate / brake
+- P or Escape — pause
+
+Mobile:
+- Swipe left/right — switch lanes
+- Hold bottom-right of screen — accelerate
+- Hold bottom-left of screen — brake
+- Tilt steering — optional gyroscope controls (toggle in top right)
+- Haptic feedback on lane changes, crashes, coin pickups
+
+### Audio
+
+All sound is procedural using the Web Audio API. No external audio files. Engine hum, crash impacts, coin chimes, power-up sounds, and game over are all synthesized at runtime.
+
+## How it uses the Mini Apps Framework
+
+The SDK is loaded lazily (`src/nimiq.ts`). If the app detects it's running inside Nimiq Pay, it activates:
+
+- `sendNimPayment()` for car and power-up purchases
+- `getDeviceId()` for leaderboard verification and streak/purchase tracking
+- `signMessage()` for daily streak check-ins (server verifies Ed25519 signatures)
+- `getNimiqAccounts()` for account display
+
+If the SDK isn't available (browser, testing), the game runs normally with the shop disabled.
+
+## Backend
+
+Express + SQLite API in `server/`. Handles:
+
+- Score submission with anti-cheat validation (server recomputes the score formula and rejects implausible submissions)
+- Leaderboard with per-identity deduplication (best score per device or username)
+- Purchase and power-up tracking (marks power-ups as consumed after use)
+- Daily streak storage with signature verification
+- Achievement badge unlocking
+- Challenge creation and resolution
+- Rate limiting and input validation on all endpoints
+- Hosted on Turso (remote SQLite) for production
+
+## Running locally
 
 ```bash
+# Frontend
 npm install
 npm run dev
-```
+# opens http://localhost:5173
 
-Open `http://localhost:5173` in your browser.
-
-The game runs standalone without a backend — the leaderboard panel will just show a
-connection error until the analytics server (below) is running. The cosmetic shop
-requires running inside Nimiq Pay.
-
-## Nimiq Pay Integration
-
-Nimiq Racer is built as a [Nimiq Mini App](https://nimiq.dev/mini-apps/) using `@nimiq/mini-app-sdk`.
-
-**Features:**
-- **Cosmetic shop** — 3 free cars + 3 premium cars purchasable with NIM
-- **Device identity** — Nimiq Pay provides a per-origin device identifier for leaderboard verification
-- **Graceful degradation** — the game works in any browser; shop and device verification only activate inside Nimiq Pay
-
-**Setup:**
-1. Set `VITE_NIM_RECIPIENT_ADDRESS` in `.env` to your NIM address (receives shop payments)
-2. Optionally adjust `VITE_CAR_PRICE_LUNA` (default: 100000 = 1 NIM per car)
-3. Build and deploy to HTTPS hosting
-4. Open the deployed URL inside Nimiq Pay to test purchases
-
-**Testing in Nimiq Pay:**
-1. Deploy to any HTTPS host, or run `npm run dev` locally and expose it via a tunnel (e.g. `ngrok http 5173`)
-2. On your phone, open the deeplink: `https://nimpay.app/miniapps/open/<your-host>` (e.g. `https://nimpay.app/miniapps/open/abc123.ngrok.io`)
-   - Or use the custom scheme: `nimiqpay://miniapp?url=<your-host>`
-3. Nimiq Pay will show a warning for unrecognized URLs, then load the app with full SDK access
-4. To test with free NIM: open Nimiq Pay settings, long-press the settings button for ~10 seconds to unlock the dev menu, switch to **Testnet**, then tap "Get free NIM" to receive 110,000 test NIM
-
-**Testing outside Nimiq Pay:**
-The game loads normally in any browser. Premium cars will show prices but purchasing will
-display "Shop unavailable — open in Nimiq Pay" since the SDK requires the Nimiq Pay host.
-
-## Analytics & Leaderboard Backend
-
-`server/` is a small Express + SQLite API that records completed runs and serves a
-global leaderboard. It's optional for local play but required for the leaderboard
-and rank-on-game-over features to work.
-
-```bash
+# Backend (separate terminal)
 cd server
 npm install
 npm run dev
+# starts API on http://localhost:8787
 ```
 
-This starts the API on `http://localhost:8787` (override with `PORT`) and creates
-`server/data/nimiq-racer.sqlite` on first run. Then, in the project root, copy
-`.env.example` to `.env` (defaults already point at `http://localhost:8787`) and
-run `npm run dev` as usual.
-
-**Endpoints:**
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/api/sessions` | Record a completed run (score, coins, distance, duration, car color) |
-| `GET`  | `/api/leaderboard?limit=10` | Best score per player, ranked |
-| `GET`  | `/api/players/:username/sessions` | A player's run history |
-| `POST` | `/api/events` | Generic analytics event (e.g. `game_start`) |
-| `GET`  | `/api/stats/summary` | Aggregate stats for monitoring |
-| `GET`  | `/health` | Liveness check |
-
-### Leaderboard integrity
-
-- **Anti-cheat validation** (`server/src/antiCheat.js`) — every submitted score must
-  exactly match `coins*10 + obstaclesAvoided*5 + bonusesCollected*30` (the game's real
-  scoring formula), and `distance` must track `durationSeconds` the way the client
-  actually computes it. Implausible submissions are rejected with `400`.
-- **Device-verified identity** — when running inside Nimiq Pay, the SDK provides a
-  per-origin device identifier. Submissions with a device ID get a verified badge on
-  the leaderboard (shown as a checkmark in the UI). Players without a device ID still
-  play and submit scores normally as unverified guest entries keyed by username.
-
-### Deploying the backend
-
-`server/Dockerfile` builds a container image; mount a persistent volume at `/app/data`
-for the SQLite database.
-
-```bash
-cd server
-docker build -t nimiq-racer-server .
-docker run -p 8787:8787 -v nimiq-racer-data:/app/data \
-  -e ALLOWED_ORIGINS=https://your-frontend-domain.example \
-  nimiq-racer-server
-```
-
-Config via environment variables:
-
-| Variable | Purpose |
-|----------|---------|
-| `PORT` | API port (default `8787`) |
-| `ALLOWED_ORIGINS` | Comma-separated list of frontend origins allowed by CORS |
-| `TRUST_PROXY` | Set to `0` only if exposed directly with no reverse proxy |
-| `ADMIN_SECRET` | Secret for admin stats endpoint |
-
-## Build for Production
-
-```bash
-npm run build
-npm run preview
-```
-
-Output goes to `dist/`. Deploy the contents of `dist/` to any HTTPS static hosting.
+Copy `.env.example` to `.env` in both the root and `server/` directories. The defaults work for local development.
 
 ## Testing
 
 ```bash
-npm test                # frontend: vitest
-cd server && npm test    # backend: node's built-in test runner
+npm test              # frontend (vitest) — 5 tests
+cd server && npm test # backend (node:test) — 15 tests
 ```
 
-## Tech Stack
+All tests pass. ESLint runs clean with zero errors.
 
-- **React 19** + TypeScript
-- **Three.js** — 3D rendering
-- **Vite** — dev server and bundler
-- **@nimiq/mini-app-sdk** — Nimiq Pay Mini App integration (payments, device identity)
+## Production build
 
-## Architecture
-
+```bash
+npm run build
 ```
-src/
-├── main.tsx                    # Entry point
-├── App.tsx                     # Username → car select (with shop) → game flow
-├── nimiq.ts                    # Nimiq SDK wrapper + React context/hook
-├── services/
-│   └── api.ts                  # Backend API client (sessions, leaderboard, events)
-├── utils/
-│   ├── color.ts                # Numeric car color → hex string
-│   └── gameAudio.ts            # Game audio manager
-└── components/
-    ├── EnhancedCarRaceGame.tsx  # Core game (Three.js scene, controls, HUD), lazy-loaded
-    ├── Leaderboard.tsx          # Global leaderboard panel
-    ├── Dashboard.tsx            # Admin stats dashboard
-    └── ErrorBoundary.tsx        # Error fallback UI
 
-server/                          # Analytics + leaderboard API (Express + SQLite)
-├── src/
-│   ├── index.js                 # Entry point, DB init, graceful shutdown
-│   ├── app.js                   # Express routes + middleware
-│   ├── db.js                    # SQLite schema + connection
-│   ├── validate.js              # Request validation helpers
-│   ├── antiCheat.js             # Score plausibility checks
-│   └── rateLimit.js             # Per-IP rate limiter
-├── test/                        # node:test suite
-├── deploy/                      # Dockerfile, PM2 config, Caddy example
-└── data/                        # SQLite file (gitignored)
-```
+Output goes to `dist/`. The backend is deployed via Docker (`server/Dockerfile`) or as a Vercel serverless function (`api/index.js` + `vercel.json`).
+
+## Tech stack
+
+- React 19, TypeScript, Vite 7
+- Three.js for 3D rendering
+- Web Audio API for procedural sound
+- @nimiq/mini-app-sdk v0.1.0
+- Express 5, SQLite (via @libsql/client / Turso)
+- Vitest + node:test for testing
 
 ## License
 
